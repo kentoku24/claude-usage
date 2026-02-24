@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/Users/kentoku.matsunami/.local/share/mise/installs/python/3.14.3/bin/python3
 # -*- coding: utf-8 -*-
 #
 # <xbar.title>Claude Usage</xbar.title>
