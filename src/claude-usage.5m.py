@@ -1,6 +1,6 @@
 #!/bin/bash
 # -*- coding: utf-8 -*-
-''''
+''''true
 # bash/python polyglot: Python 3.10+ with browser_cookie3 を自動検出
 for py in $("$SHELL" -lc 'which -a python3' 2>/dev/null); do
     "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
