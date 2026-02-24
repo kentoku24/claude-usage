@@ -152,6 +152,17 @@ def main():
         print("タイムアウト  |  color=gray")
         print("↺ 再試行  |  refresh=true")
         return
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 403:
+            print("🔑 Claude  |  color=gray")
+            print("---")
+            print("ログインが必要です  |  color=red")
+            print("claude.ai を開く  |  href=https://claude.ai")
+        else:
+            print("⚠️ Claude  |  color=gray")
+            print("---")
+            print(f"HTTPエラー: {e.response.status_code}  |  color=red")
+        return
     except Exception as e:
         print("⚠️ Claude Usage")
         print("---")
