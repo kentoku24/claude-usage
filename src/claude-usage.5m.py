@@ -91,9 +91,10 @@ def pct_color(pct):
     if pct >= 60: return "orange"
     return "green"
 
-def progress_bar(pct, width=12):
-    filled = round(pct / 100 * width)
-    return "█" * filled + "░" * (width - filled)
+def progress_bar(pct, projected=None, width=12):
+    current = round(pct / 100 * width)
+    proj = round(min(projected or pct, 100) / 100 * width) if projected else current
+    return "█" * current + "▒" * (proj - current) + "░" * (width - proj)
 
 def calc_projected(pct, resets_at_str, window_hours):
     """現在のペースでウィンドウ終了時に到達する予測使用率を返す。
@@ -216,7 +217,7 @@ def main():
         proj = item["projected"]
         icon = burn_icon(proj)
         c = pct_color(item["pct"])
-        bar = progress_bar(item["pct"])
+        bar = progress_bar(item["pct"], proj)
         window_label = f"{item['window_hours']}h" if item["window_hours"] < 24 else f"{item['window_hours']//24}d"
         print(f"{icon} {item['label_jp']}: {item['pct']}%  |  color={c}")
         print(f"   {bar} {item['pct']}%  |  font=Menlo size=12 color={c}")
