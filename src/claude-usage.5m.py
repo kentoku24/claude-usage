@@ -1,8 +1,11 @@
-#!/Library/Developer/CommandLineTools/usr/bin/python3
+#!/bin/bash
 # -*- coding: utf-8 -*-
+''''export PATH="$HOME/.local/share/mise/shims:$HOME/.pyenv/shims:/opt/homebrew/bin:/usr/local/bin:$PATH"
+exec python3 "$0" "$@"
+'''
 #
 # <xbar.title>Claude Usage</xbar.title>
-# <xbar.version>v1.1</xbar.version>
+# <xbar.version>v2.0</xbar.version>
 # <xbar.author>kmatsunami</xbar.author>
 # <xbar.desc>Claude.ai の使用量（セッション / 全モデル / Sonnet）をメニューバーに表示</xbar.desc>
 # <xbar.dependencies>python3,browser-cookie3,requests</xbar.dependencies>
