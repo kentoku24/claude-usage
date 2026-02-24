@@ -1,6 +1,16 @@
 #!/bin/bash
 # -*- coding: utf-8 -*-
-''''exec "$SHELL" -lc "for py in \$(which -a python3 2>/dev/null); do \"\$py\" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null && \"\$py\" -c 'import browser_cookie3' 2>/dev/null && exec \"\$py\" \"$0\"; done; echo '⚠️ Claude | color=gray'; echo '---'; echo 'pip3 install browser-cookie3 requests (Python 3.10+)'"
+''''
+# bash/python polyglot: Python 3.10+ with browser_cookie3 を自動検出
+for py in $("$SHELL" -lc 'which -a python3' 2>/dev/null); do
+    "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
+    "$py" -c 'import browser_cookie3' 2>/dev/null || continue
+    exec "$py" "$0"
+done
+echo "⚠️ Claude | color=gray"
+echo "---"
+echo "pip3 install browser-cookie3 requests (Python 3.10+)"
+exit
 '''
 #
 # <xbar.title>Claude Usage</xbar.title>
