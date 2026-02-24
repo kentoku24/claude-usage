@@ -8,24 +8,31 @@ PLUGIN="$SCRIPT_DIR/claude-usage.5m.py"
 
 echo "=== Claude Usage Setup ==="
 
-# 依存ライブラリのインストール
+# 1. 依存ライブラリのインストール
 echo ""
 echo "▶ 依存ライブラリをインストール中..."
 pip3 install browser-cookie3 requests
 echo "  完了 ✓"
 
-# 実行権限の付与
+# 2. browser_cookie3 が使える Python の絶対パスを取得してシェバンを書き換え
+PYTHON=$(python3 -c "import browser_cookie3; import sys; print(sys.executable)")
+echo ""
+echo "▶ Python: $PYTHON"
+sed -i '' "1s|.*|#!$PYTHON|" "$PLUGIN"
+echo "  シェバンを更新しました ✓"
+
+# 3. 実行権限の付与
 chmod +x "$PLUGIN"
 echo ""
 echo "▶ 実行権限を付与しました ✓"
 
-# 動作確認
+# 4. 動作確認
 echo ""
 echo "▶ 動作確認中..."
-python3 "$PLUGIN" 2>&1 | head -1
+"$PYTHON" "$PLUGIN" 2>&1 | head -1
 
 echo ""
 echo "=== セットアップ完了 ==="
 echo ""
 echo "次のステップ:"
-echo "  $PLUGIN を SwiftBar のプラグインフォルダにコピーしてください"
+echo "  SwiftBar で「Refresh All」を実行してください"
