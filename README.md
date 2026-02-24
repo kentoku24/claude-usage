@@ -87,10 +87,13 @@ mise which python3
 mkdir -p ~/Documents/SwiftBar
 
 # スクリプトをコピー
-cp claude-usage.5m.py ~/Documents/SwiftBar/
+cp src/claude-usage.5m.py ~/Documents/SwiftBar/
 
 # 実行権限を付与
 chmod +x ~/Documents/SwiftBar/claude-usage.5m.py
+
+# 設定ファイルをコピー（お好みで編集）
+cp config.example.json ~/.claude-usage-config.json
 ```
 
 ### 4. SwiftBar を起動してフォルダを選択
@@ -133,7 +136,46 @@ Chrome で claude.ai にログインしているか確認してください。�
 - 📵 Claude（グレー）→ オフライン
 - ⏳ Claude（グレー）→ タイムアウト（再試行ボタンあり）
 
-## 更新頻度のカスタマイズ
+## カスタマイズ
+
+### 設定ファイル（`~/.claude-usage-config.json`）
+
+以下の設定ファイルを作成することで動作をカスタマイズできます。ファイルがない場合はデフォルト値が使われます。
+
+```json
+{
+  "warn_pct":  80,
+  "alert_pct": 100,
+  "bar_width": 12,
+  "metrics": ["five_hour", "seven_day", "seven_day_sonnet"]
+}
+```
+
+| キー | デフォルト | 説明 |
+|-----|-----------|------|
+| `warn_pct` | `80` | 警告通知を送る予測使用率の閾値（🟡） |
+| `alert_pct` | `100` | アラート通知を送る予測使用率の閾値（🔴） |
+| `bar_width` | `12` | プログレスバーの文字数 |
+| `metrics` | 全3指標 | 表示する指標のリスト（順序も反映） |
+
+**設定例**: Sonnet だけ表示、70% 超で警告
+
+```json
+{
+  "warn_pct": 70,
+  "metrics": ["seven_day_sonnet"]
+}
+```
+
+### macOS 通知アラート
+
+予測使用率が `warn_pct`（デフォルト 80%）または `alert_pct`（デフォルト 100%）を超えると、macOS の通知センターに通知が届きます。
+
+- 同じリセットサイクル内で各閾値につき **1回のみ** 送信されます（連続通知なし）
+- リセット後は自動的にリセットされます
+- 通知の状態は `~/.claude-usage-alerted.json` で管理されます
+
+### 更新頻度のカスタマイズ
 
 ファイル名の `5m` が更新間隔です。変更する場合はファイルをリネームします：
 
