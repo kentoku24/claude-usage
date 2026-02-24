@@ -1,7 +1,6 @@
 #!/bin/bash
 # -*- coding: utf-8 -*-
-''''export PATH="$HOME/.local/share/mise/shims:$HOME/.pyenv/shims:/opt/homebrew/bin:/usr/local/bin:$PATH"
-exec python3 "$0" "$@"
+''''exec "$SHELL" -lc "for py in \$(which -a python3 2>/dev/null); do \"\$py\" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null && \"\$py\" -c 'import browser_cookie3' 2>/dev/null && exec \"\$py\" \"$0\"; done; echo '⚠️ Claude | color=gray'; echo '---'; echo 'pip3 install browser-cookie3 requests (Python 3.10+)'"
 '''
 #
 # <xbar.title>Claude Usage</xbar.title>
