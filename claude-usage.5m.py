@@ -107,9 +107,6 @@ def burn_icon(projected):
     if projected >= 80:     return "🟡"
     return "🟢"
 
-def status_icon(projected):
-    """メニューバー左端アイコン（セッションの burn rate 基準）。"""
-    return burn_icon(projected)
 
 def format_reset(resets_at_str):
     """resets_at → '3時間12分後' または '水 21:00' 形式"""
@@ -186,15 +183,9 @@ def main():
         print("設定ページを開く | href=https://claude.ai/settings/usage")
         return
 
-    # メニューバーアイコンは全指標のうち最も悪い予測で決める
-    worst_projected = max(
-        (i["projected"] for i in items if i["projected"] is not None),
-        default=None
-    )
-
     # ── メニューバー タイトル ──────────────────────────────────
-    bar_title = "  ".join(f"{i['label_en']}:{i['pct']}%" for i in items)
-    print(f"{status_icon(worst_projected)} {bar_title}")
+    bar_title = " ".join(f"{burn_icon(i['projected'])} {i['pct']}%" for i in items)
+    print(bar_title)
 
     # ── ドロップダウン ────────────────────────────────────────
     print("---")
