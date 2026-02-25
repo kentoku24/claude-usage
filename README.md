@@ -187,6 +187,20 @@ mv ~/Documents/SwiftBar/claude-usage.5m.py ~/Documents/SwiftBar/claude-usage.1m.
 mv ~/Documents/SwiftBar/claude-usage.5m.py ~/Documents/SwiftBar/claude-usage.10m.py
 ```
 
+## テスト
+
+```bash
+python3 -m pytest src/test_claude_usage.py -v
+```
+
+| テスト | 検証内容 |
+|--------|---------|
+| `test_python_detected` | SwiftBar相当の限定環境でPythonが見つかる |
+| `test_menubar_title_has_percentage` | 1行目に `%` が含まれる（数値表示） |
+| `test_output_has_separator` | SwiftBarフォーマット `---` が含まれる |
+
+> Claude.aiにアクセスできる環境（ログイン済みChrome）が必要です。
+
 ## 仕組み
 
 Chrome の Cookie を使って `claude.ai/api/organizations/{uuid}/usage` という JSON エンドポイントを直接叩いています。HTML スクレイピングではないため、UI が変わっても動作します。

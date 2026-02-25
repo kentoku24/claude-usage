@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 ''''true
 # bash/python polyglot: Python 3.10+ with browser_cookie3 を自動検出
-for py in $("$SHELL" -lc 'which -a python3' 2>/dev/null); do
+MISE_PY=/Users/kentoku.matsunami/.local/share/mise/installs/python/latest/bin/python3
+for py in "$MISE_PY" $("$SHELL" -lc 'which -a python3' 2>/dev/null); do
     "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
     "$py" -c 'import browser_cookie3' 2>/dev/null || continue
     exec "$py" "$0"
@@ -187,13 +188,17 @@ def pct_color(pct):
 
 def progress_bar(pct, projected=None, width=12):
     current = round(pct / 100 * width)
+    if projected and projected > 100:
+        overflow_chars = round((projected - 100) / 100 * width)
+        proj_within = width - current  # current〜100% の ▒ 部分
+        return "█" * current + "▒" * proj_within + "▓" * overflow_chars
     proj = round(min(projected or pct, 100) / 100 * width) if projected else current
     return "█" * current + "▒" * (proj - current) + "░" * (width - proj)
 
 def calc_projected(pct, resets_at_str, window_hours):
     """現在のペースでウィンドウ終了時に到達する予測使用率を返す。
     計算不能な場合は None。"""
-    if not resets_at_str or pct <= 0:
+    if not resets_at_str or pct < 2:
         return None
     try:
         resets_at = datetime.fromisoformat(resets_at_str)
@@ -330,7 +335,8 @@ def main():
             else f"{item['window_hours']//24}d"
         )
         print(f"{icon} {item['label_jp']}: {item['pct']}%  |  color={c}")
-        print(f"   {bar} {item['pct']}%  |  font=Menlo size=12 color={c}")
+        bar_label = f"{item['pct']}% → {proj:.0f}%" if proj and proj > 100 else f"{item['pct']}%"
+        print(f"   {bar} {bar_label}  |  font=Menlo size=12 color={c}")
         if proj is not None:
             proj_color = (
                 "red"    if proj >= config["alert_pct"]   else
