@@ -57,6 +57,7 @@ except ImportError as e:
 BASE_URL        = "https://claude.ai"
 CONFIG_PATH     = Path.home() / ".claude-usage-config.json"
 ALERT_STATE_PATH = Path.home() / ".claude-usage-alerted.json"
+CACHE_PATH      = Path.home() / ".claude-usage-cache.json"
 
 # デフォルト設定（~/.claude-usage-config.json で上書き可能）
 DEFAULT_CONFIG = {
@@ -102,6 +103,23 @@ def save_alert_state(state):
         ALERT_STATE_PATH.write_text(json.dumps(state, indent=2))
     except Exception:
         pass
+
+# ── 前回値キャッシュ ──────────────────────────────────────────
+def save_cache(items):
+    """正常取得時の items をキャッシュに保存する。"""
+    try:
+        CACHE_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
+def load_cache():
+    """前回の items をキャッシュから読み込む。なければ None。"""
+    if CACHE_PATH.exists():
+        try:
+            return json.loads(CACHE_PATH.read_text())
+        except Exception:
+            pass
+    return None
 
 def send_notification(title, message):
     """macOS 通知センターに通知を送る。"""
@@ -257,33 +275,53 @@ def main():
         org_uuid = get_org_uuid(session)
         usage = get_usage(session, org_uuid)
     except requests.exceptions.ConnectionError:
-        print("📵 Claude  |  color=gray")
-        print("---")
-        print("オフライン  |  color=gray")
+        cached = load_cache()
+        if cached:
+            render_output(cached, config, stale_reason="オフライン（前回の値を表示中）")
+        else:
+            print("📵 Claude  |  color=gray")
+            print("---")
+            print("オフライン  |  color=gray")
         return
     except requests.exceptions.Timeout:
-        print("⏳ Claude  |  color=gray")
-        print("---")
-        print("タイムアウト  |  color=gray")
-        print("↺ 再試行  |  refresh=true")
+        cached = load_cache()
+        if cached:
+            render_output(cached, config, stale_reason="タイムアウト（前回の値を表示中）")
+        else:
+            print("⏳ Claude  |  color=gray")
+            print("---")
+            print("タイムアウト  |  color=gray")
+            print("↺ 再試行  |  refresh=true")
         return
     except requests.exceptions.HTTPError as e:
+        cached = load_cache()
         if e.response.status_code == 403:
-            print("🔑 Claude  |  color=gray")
-            print("---")
-            print("ログインが必要です  |  color=red")
-            print("claude.ai を開く  |  href=https://claude.ai")
+            reason = "ログインが必要です（前回の値を表示中）"
         else:
-            print("⚠️ Claude  |  color=gray")
-            print("---")
-            print(f"HTTPエラー: {e.response.status_code}  |  color=red")
+            reason = f"HTTPエラー {e.response.status_code}（前回の値を表示中）"
+        if cached:
+            render_output(cached, config, stale_reason=reason)
+        else:
+            if e.response.status_code == 403:
+                print("🔑 Claude  |  color=gray")
+                print("---")
+                print("ログインが必要です  |  color=red")
+                print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
+            else:
+                print("⚠️ Claude  |  color=gray")
+                print("---")
+                print(f"HTTPエラー: {e.response.status_code}  |  color=red")
         return
     except Exception as e:
-        print("⚠️ Claude Usage")
-        print("---")
-        print(f"エラー: {str(e)[:120]}")
-        print("---")
-        print("設定ページを開く | href=https://claude.ai/settings/usage")
+        cached = load_cache()
+        if cached:
+            render_output(cached, config, stale_reason=f"エラー（前回の値を表示中）")
+        else:
+            print("⚠️ Claude Usage")
+            print("---")
+            print(f"エラー: {str(e)[:120]}")
+            print("---")
+            print("設定ページを開く | href=https://claude.ai/settings/usage")
         return
 
     # 有効な指標だけ抽出し、各自の burn rate 予測も計算
@@ -313,17 +351,34 @@ def main():
         print("設定ページを開く | href=https://claude.ai/settings/usage")
         return
 
+    # キャッシュに保存（次回エラー時のフォールバック用）
+    save_cache(items)
+
     # 通知チェック（閾値超過時のみ macOS 通知を送信）
     check_and_notify(items, config)
 
+    render_output(items, config)
+
+
+def render_output(items, config, stale_reason=None):
+    """メニューバーとドロップダウンを描画する。
+    stale_reason が指定されていればキャッシュ表示であることを示す。
+    """
     # ── メニューバー タイトル ──────────────────────────────────
     bar_title = " ".join(
         f"{burn_icon(i['projected'], config)} {i['pct']}%" for i in items
     )
+    if stale_reason:
+        bar_title = f"⚠️ {bar_title}"
     print(bar_title)
 
     # ── ドロップダウン ────────────────────────────────────────
     print("---")
+    if stale_reason:
+        print(f"⚠️ {stale_reason}  |  color=red size=11")
+        print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
+        print("---")
+
     for item in items:
         proj = item["projected"]
         icon = burn_icon(proj, config)
