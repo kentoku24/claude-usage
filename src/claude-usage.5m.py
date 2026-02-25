@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 ''''true
 # bash/python polyglot: Python 3.10+ with browser_cookie3 を自動検出
-MISE_PY=/Users/kentoku.matsunami/.local/share/mise/installs/python/latest/bin/python3
-for py in "$MISE_PY" $("$SHELL" -lc 'which -a python3' 2>/dev/null); do
+for py in $("$SHELL" -lic 'which -a python3' 2>/dev/null); do
     "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
     "$py" -c 'import browser_cookie3' 2>/dev/null || continue
     exec "$py" "$0"
