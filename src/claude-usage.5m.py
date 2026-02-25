@@ -187,6 +187,10 @@ def pct_color(pct):
 
 def progress_bar(pct, projected=None, width=12):
     current = round(pct / 100 * width)
+    if projected and projected > 100:
+        overflow_chars = round((projected - 100) / 100 * width)
+        proj_within = width - current  # current〜100% の ▒ 部分
+        return "█" * current + "▒" * proj_within + "▓" * overflow_chars
     proj = round(min(projected or pct, 100) / 100 * width) if projected else current
     return "█" * current + "▒" * (proj - current) + "░" * (width - proj)
 
@@ -330,7 +334,8 @@ def main():
             else f"{item['window_hours']//24}d"
         )
         print(f"{icon} {item['label_jp']}: {item['pct']}%  |  color={c}")
-        print(f"   {bar} {item['pct']}%  |  font=Menlo size=12 color={c}")
+        bar_label = f"{item['pct']}% → {proj:.0f}%" if proj and proj > 100 else f"{item['pct']}%"
+        print(f"   {bar} {bar_label}  |  font=Menlo size=12 color={c}")
         if proj is not None:
             proj_color = (
                 "red"    if proj >= config["alert_pct"]   else
