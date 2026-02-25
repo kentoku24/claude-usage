@@ -334,8 +334,8 @@ def main():
             if item["window_hours"] < 24
             else f"{item['window_hours']//24}d"
         )
-        print(f"{icon} {item['label_jp']}: {item['pct']}%  |  color={c}")
-        bar_label = f"{item['pct']}% → {proj:.0f}%" if proj and proj > 100 else f"{item['pct']}%"
+        print(f"{icon} {item['label_jp']}  |  color={c}")
+        bar_label = f"{item['pct']}% → {proj:.0f}%" if proj is not None else f"{item['pct']}%"
         print(f"   {bar} {bar_label}  |  font=Menlo size=12 color={c}")
         if proj is not None:
             proj_color = (
