@@ -104,15 +104,27 @@ cp config.example.json ~/.claude-usage-config.json
 
 ### 5. 動作確認
 
-SwiftBar アイコン → **Refresh All** で更新。
-
-表示されない場合はターミナルで直接実行して確認：
+**ステップ1: スクリプト単体で動作確認**
 
 ```bash
-# SwiftBar と同じ環境変数をセットして実行
-export SWIFTBAR=1
-python3 ~/Documents/SwiftBar/claude-usage.5m.py
+bash /path/to/src/claude-usage.5m.py
 ```
+
+`%` を含む出力が出れば正常。`pip3 install...` と出た場合は Python 検出の問題。
+
+**ステップ2: SwiftBar を更新**
+
+メニューバーの SwiftBar アイコン → **Refresh All**
+
+**ステップ3: それでも表示されない場合は再起動**
+
+SwiftBar 自体の Glitch でメニューバーアイテムが消えることがあります（スクリプトが正常でも起きます）。
+
+```bash
+pkill -x SwiftBar && open -a SwiftBar
+```
+
+> スクリプト単体（ステップ1）で正常出力が出ているのにメニューバーに出ない場合は SwiftBar の再起動で解消します。
 
 ## トラブルシューティング
 
