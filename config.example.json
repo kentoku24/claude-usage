@@ -1,4 +1,5 @@
 {
+  "caution_pct": 60,
   "warn_pct": 80,
   "alert_pct": 100,
   "bar_width": 12,
