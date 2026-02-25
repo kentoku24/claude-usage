@@ -59,8 +59,9 @@ ALERT_STATE_PATH = Path.home() / ".claude-usage-alerted.json"
 
 # デフォルト設定（~/.claude-usage-config.json で上書き可能）
 DEFAULT_CONFIG = {
-    "warn_pct":  80,    # 予測使用率の警告閾値（🟠）
-    "alert_pct": 100,   # 予測使用率のアラート閾値（🔴）
+    "caution_pct": 60,  # 予測使用率の注意閾値（🟡）
+    "warn_pct":    80,  # 予測使用率の警告閾値（🟠）
+    "alert_pct":  100,  # 予測使用率のアラート閾値（🔴）
     "bar_width": 12,    # プログレスバーの幅（文字数）
     "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標
 }
@@ -208,9 +209,10 @@ def calc_projected(pct, resets_at_str, window_hours):
 
 def burn_icon(projected, config):
     """burn rate 予測値からアイコン絵文字を返す。"""
-    if projected is None:                     return "🟢"
-    if projected >= config["alert_pct"]:      return "🔴"
-    if projected >= config["warn_pct"]:       return "🟠"
+    if projected is None:                         return "🟢"
+    if projected >= config["alert_pct"]:          return "🔴"
+    if projected >= config["warn_pct"]:           return "🟠"
+    if projected >= config["caution_pct"]:        return "🟡"
     return "🟢"
 
 def format_reset(resets_at_str):
@@ -331,8 +333,9 @@ def main():
         print(f"   {bar} {item['pct']}%  |  font=Menlo size=12 color={c}")
         if proj is not None:
             proj_color = (
-                "red"    if proj >= config["alert_pct"] else
-                "orange" if proj >= config["warn_pct"]  else
+                "red"    if proj >= config["alert_pct"]   else
+                "orange" if proj >= config["warn_pct"]    else
+                "yellow" if proj >= config["caution_pct"] else
                 "gray"
             )
             print(f"   📈 {window_label}予測: {proj:.0f}%  |  size=11 color={proj_color}")
