@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 ''''true
 # bash/python polyglot: Python 3.10+ with browser_cookie3 を自動検出
-for py in $("$SHELL" -lc 'which -a python3' 2>/dev/null); do
+MISE_PY=/Users/kentoku.matsunami/.local/share/mise/installs/python/latest/bin/python3
+for py in "$MISE_PY" $("$SHELL" -lc 'which -a python3' 2>/dev/null); do
     "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
     "$py" -c 'import browser_cookie3' 2>/dev/null || continue
     exec "$py" "$0"
@@ -197,7 +198,7 @@ def progress_bar(pct, projected=None, width=12):
 def calc_projected(pct, resets_at_str, window_hours):
     """現在のペースでウィンドウ終了時に到達する予測使用率を返す。
     計算不能な場合は None。"""
-    if not resets_at_str or pct <= 0:
+    if not resets_at_str or pct < 2:
         return None
     try:
         resets_at = datetime.fromisoformat(resets_at_str)
