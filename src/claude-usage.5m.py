@@ -213,8 +213,13 @@ def progress_bar(pct, projected=None, width=12):
     return "█" * current + "▒" * (proj - current) + "░" * (width - proj)
 
 def calc_projected(pct, resets_at_str, window_hours):
-    """現在のペースでウィンドウ終了時に到達する予測使用率を返す。
-    計算不能な場合は None。"""
+    """現在のペースでウィンドウ終了時に到達する予測使用率を返す。計算不能時は None。
+
+    now, resets_at, utilization, window_hours の4値のみで計算:
+      elapsed       = window_hours - time_remaining
+      burn_rate     = pct / elapsed
+      projected     = burn_rate * window_hours
+    """
     if not resets_at_str or pct < 2:
         return None
     try:
@@ -383,11 +388,8 @@ def render_output(items, config, stale_reason=None):
         icon = burn_icon(proj, config)
         c    = pct_color(item["pct"])
         bar  = progress_bar(item["pct"], proj, width=config["bar_width"])
-        window_label = (
-            f"{item['window_hours']}h"
-            if item["window_hours"] < 24
-            else f"{item['window_hours']//24}d"
-        )
+        wh = item["window_hours"]
+        window_label = f"{wh}h" if wh < 24 else f"{wh // 24}d"
         print(f"{icon} {item['label_jp']}  |  color={c}")
         bar_label = f"{item['pct']}% → {proj:.0f}%" if proj is not None else f"{item['pct']}%"
         print(f"   {bar} {bar_label}  |  font=Menlo size=12 color={c}")
