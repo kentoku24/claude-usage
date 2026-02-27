@@ -213,7 +213,7 @@ def progress_bar(pct, projected=None, width=12):
     return "█" * current + "▒" * (proj - current) + "░" * (width - proj)
 
 def calc_projected(pct, resets_at_str, window_hours):
-    """現在のペースでウィンドウ終了時に到達する予測使用率を返す。
+    """現在のペースでウィンドウ終了時に到達する予測使用率を返す。計算不能時は None。
 
     now, resets_at, utilization, window_hours の4値のみで計算:
       elapsed       = window_hours - time_remaining
