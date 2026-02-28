@@ -65,6 +65,7 @@ DEFAULT_CONFIG = {
     "alert_pct":  100,  # 予測使用率のアラート閾値（🔴）
     "bar_width": 12,    # プログレスバーの幅（文字数）
     "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標
+    "show_exhaust_guide": True,  # 使い切りガイドを表示するか
 }
 
 # 全指標の定義  (key, label_en, label_jp, window_hours)
@@ -234,6 +235,39 @@ def calc_projected(pct, resets_at_str, window_hours):
     except Exception:
         return None
 
+def calc_exhaust_info(pct, projected, resets_at_str, window_hours):
+    """使い切りガイド: 残りクオータを消化するための目標ペース情報を計算。
+
+    Returns dict or None:
+      - multiplier:     現ペースの何倍必要か (projected > 0 の場合)
+      - target_per_5h:  5時間あたり消費すべき % (当該クオータ基準)
+      - remaining_pct:  残り %
+      - sessions_left:  残りの5時間セッション数
+    """
+    if not resets_at_str or window_hours < 24:   # 5hクオータは対象外
+        return None
+    try:
+        resets_at = datetime.fromisoformat(resets_at_str)
+        now = datetime.now(timezone.utc)
+        time_remaining_h = (resets_at - now).total_seconds() / 3600
+        if time_remaining_h <= 0:
+            return None
+        remaining_pct = 100 - pct
+        if remaining_pct <= 0:
+            return {"multiplier": 0, "target_per_5h": 0,
+                    "remaining_pct": 0, "sessions_left": 0}
+        sessions_left = time_remaining_h / 5
+        target_per_5h = remaining_pct / sessions_left
+        multiplier = round(100 / projected, 1) if projected and projected > 0 else None
+        return {
+            "multiplier": multiplier,
+            "target_per_5h": target_per_5h,
+            "remaining_pct": remaining_pct,
+            "sessions_left": sessions_left,
+        }
+    except Exception:
+        return None
+
 def burn_icon(projected, config):
     """burn rate 予測値からアイコン絵文字を返す。"""
     if projected is None:                         return "🟢"
@@ -346,6 +380,7 @@ def main():
             "projected":    proj,
             "reset":        format_reset(resets_at),
             "resets_at_raw": resets_at,
+            "exhaust_info": calc_exhaust_info(pct, proj, resets_at, window_hours),
         })
 
     if not items:
@@ -403,6 +438,43 @@ def render_output(items, config, stale_reason=None):
             print(f"   📈 {window_label}予測: {proj:.0f}%  |  size=11 color={proj_color}")
         if item["reset"]:
             print(f"   🔄 {item['reset']}  |  size=11 color=gray")
+        print("---")
+
+    # ── 使い切りガイド ──────────────────────────────────────────
+    guide_items = [i for i in items if i.get("exhaust_info")]
+    if guide_items and config.get("show_exhaust_guide", True):
+        print("🎯 使い切りガイド  |  size=12")
+        for item in guide_items:
+            info = item["exhaust_info"]
+            label = item["label_en"]
+            mult = info["multiplier"]
+            remaining = info["remaining_pct"]
+            sessions = info["sessions_left"]
+            target = info["target_per_5h"]
+
+            if remaining <= 0:
+                print(f"   {label:7s}: 使い切り済み  |  font=Menlo size=11 color=green")
+                continue
+
+            if mult is not None:
+                if mult <= 1.0:
+                    proj_str = f"予測{item['projected']:.0f}%" if item.get("projected") else ""
+                    print(f"   {label:7s}: ✅ 現ペースで使い切り（{proj_str}）"
+                          f"  |  font=Menlo size=11 color=green")
+                else:
+                    if mult > 3.0:
+                        color = "red"
+                    elif mult > 1.5:
+                        color = "orange"
+                    else:
+                        color = "#4a9eff"
+                    mult_s = f"×{mult:.0f}" if mult >= 10 else f"×{mult:.1f}"
+                    print(f"   {label:7s}: {mult_s} 必要"
+                          f"（残{remaining:.0f}% / あと{sessions:.0f}回）"
+                          f"  |  font=Menlo size=11 color={color}")
+            elif target is not None:
+                print(f"   {label:7s}: 5hあたり{target:.1f}%消費で使い切り"
+                      f"（残{remaining:.0f}%）  |  font=Menlo size=11 color=gray")
         print("---")
 
     print("↗ claude.ai/settings/usage  |  href=https://claude.ai/settings/usage")
