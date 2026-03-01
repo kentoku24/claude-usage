@@ -234,6 +234,39 @@ def calc_projected(pct, resets_at_str, window_hours):
     except Exception:
         return None
 
+def calc_exhaust_info(pct, projected, resets_at_str, window_hours):
+    """7d全消化ガイド: 残りクオータを消化するための目標ペース情報を計算。
+
+    Returns dict or None:
+      - multiplier:     現ペースの何倍必要か (projected > 0 の場合)
+      - target_per_5h:  5時間あたり消費すべき % (当該クオータ基準)
+      - remaining_pct:  残り %
+      - sessions_left:  残りの5時間セッション数
+    """
+    if not resets_at_str or window_hours < 24:   # 5hクオータは対象外
+        return None
+    try:
+        resets_at = datetime.fromisoformat(resets_at_str)
+        now = datetime.now(timezone.utc)
+        time_remaining_h = (resets_at - now).total_seconds() / 3600
+        if time_remaining_h <= 0:
+            return None
+        remaining_pct = 100 - pct
+        if remaining_pct <= 0:
+            return {"multiplier": 0, "target_per_5h": 0,
+                    "remaining_pct": 0, "sessions_left": 0}
+        sessions_left = time_remaining_h / 5
+        target_per_5h = remaining_pct / sessions_left
+        multiplier = round(100 / projected, 1) if projected and projected > 0 else None
+        return {
+            "multiplier": multiplier,
+            "target_per_5h": target_per_5h,
+            "remaining_pct": remaining_pct,
+            "sessions_left": sessions_left,
+        }
+    except Exception:
+        return None
+
 def burn_icon(projected, config):
     """burn rate 予測値からアイコン絵文字を返す。"""
     if projected is None:                         return "🟢"
@@ -346,6 +379,7 @@ def main():
             "projected":    proj,
             "reset":        format_reset(resets_at),
             "resets_at_raw": resets_at,
+            "exhaust_info": calc_exhaust_info(pct, proj, resets_at, window_hours),
         })
 
     if not items:
@@ -383,15 +417,41 @@ def render_output(items, config, stale_reason=None):
         print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
         print("---")
 
+    # 5h セクション用: 7d全消化目標を算出
+    seven_day_mult = None
+    for i in items:
+        info = i.get("exhaust_info")
+        if info and info.get("multiplier") is not None:
+            seven_day_mult = info["multiplier"]
+            break  # metrics 定義順で最初の 7d を採用
+
     for item in items:
         proj = item["projected"]
         icon = burn_icon(proj, config)
         c    = pct_color(item["pct"])
-        bar  = progress_bar(item["pct"], proj, width=config["bar_width"])
         wh = item["window_hours"]
         window_label = f"{wh}h" if wh < 24 else f"{wh // 24}d"
+
+        # 5h セクションのみ: 7d全消化目標
+        # 表示条件: 5h予測 < 100%（利用不可リスクなし）かつ目標 < 予測（達成圏内）
+        target_5h = None
+        if wh < 24 and seven_day_mult is not None and proj is not None and proj < 100:
+            candidate = round(proj * seven_day_mult, 1)
+            if candidate < proj:
+                target_5h = candidate
+
+        bar = progress_bar(item["pct"], proj, width=config["bar_width"])
+
         print(f"{icon} {item['label_jp']}  |  color={c}")
-        bar_label = f"{item['pct']}% → {proj:.0f}%" if proj is not None else f"{item['pct']}%"
+
+        # バーラベル
+        if target_5h is not None:
+            bar_label = f"{item['pct']}%→{proj:.0f}% 🎯{target_5h:.0f}%"
+        elif proj is not None:
+            bar_label = f"{item['pct']}% → {proj:.0f}%"
+        else:
+            bar_label = f"{item['pct']}%"
+
         print(f"   {bar} {bar_label}  |  font=Menlo size=12 color={c}")
         if proj is not None:
             proj_color = (
