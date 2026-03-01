@@ -203,28 +203,8 @@ def pct_color(pct):
     if pct >= 60: return "orange"
     return "green"
 
-def progress_bar(pct, projected=None, target=None, width=12):
+def progress_bar(pct, projected=None, width=12):
     current = round(pct / 100 * width)
-
-    # 3値バー: target が projected を超える場合
-    if target is not None and projected is not None and target > projected:
-        proj_end = min(round(projected / 100 * width), width)
-        proj_chars = max(proj_end - current, 0)
-        if target > 100:
-            # ██▒▒▒▒▒▒░░▓▓▓▓ (projected〜100% が ░, 100%〜target が ▓)
-            free = max(width - proj_end, 0)
-            overflow = round((target - 100) / 100 * width)
-            return ("█" * current + "▒" * proj_chars +
-                    "░" * free + "▓" * overflow)
-        else:
-            # ████▒▒▓▓▓░░░ (projected〜target が ▓, target〜100% が ░)
-            target_end = round(target / 100 * width)
-            target_chars = max(target_end - proj_end, 0)
-            free = max(width - target_end, 0)
-            return ("█" * current + "▒" * proj_chars +
-                    "▓" * target_chars + "░" * free)
-
-    # 2値バー（既存動作）
     if projected and projected > 100:
         overflow_chars = round((projected - 100) / 100 * width)
         proj_within = width - current  # current〜100% の ▒ 部分
@@ -255,7 +235,7 @@ def calc_projected(pct, resets_at_str, window_hours):
         return None
 
 def calc_exhaust_info(pct, projected, resets_at_str, window_hours):
-    """使い切りガイド: 残りクオータを消化するための目標ペース情報を計算。
+    """7d全消化ガイド: 残りクオータを消化するための目標ペース情報を計算。
 
     Returns dict or None:
       - multiplier:     現ペースの何倍必要か (projected > 0 の場合)
@@ -437,7 +417,7 @@ def render_output(items, config, stale_reason=None):
         print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
         print("---")
 
-    # 5h セクション用: 7d の倍率から目標 5h% を算出
+    # 5h セクション用: 7d全消化目標を算出
     seven_day_mult = None
     for i in items:
         info = i.get("exhaust_info")
@@ -452,25 +432,23 @@ def render_output(items, config, stale_reason=None):
         wh = item["window_hours"]
         window_label = f"{wh}h" if wh < 24 else f"{wh // 24}d"
 
-        # 5h セクションのみ: 7d 倍率から目標値を計算
+        # 5h セクションのみ: 7d全消化目標
+        # 表示条件: 5h予測 < 100%（利用不可リスクなし）かつ目標 < 予測（達成圏内）
         target_5h = None
-        if wh < 24 and seven_day_mult is not None and proj is not None:
-            if seven_day_mult > 1.0:
-                target_5h = round(proj * seven_day_mult, 1)
+        if wh < 24 and seven_day_mult is not None and proj is not None and proj < 100:
+            candidate = round(proj * seven_day_mult, 1)
+            if candidate < proj:
+                target_5h = candidate
 
-        bar = progress_bar(item["pct"], proj,
-                           target=target_5h, width=config["bar_width"])
+        bar = progress_bar(item["pct"], proj, width=config["bar_width"])
 
         print(f"{icon} {item['label_jp']}  |  color={c}")
 
-        # バーラベル: 3値 or 2値 or 1値
+        # バーラベル
         if target_5h is not None:
             bar_label = f"{item['pct']}%→{proj:.0f}% 🎯{target_5h:.0f}%"
         elif proj is not None:
-            if wh < 24 and seven_day_mult is not None and seven_day_mult <= 1.0:
-                bar_label = f"{item['pct']}% → {proj:.0f}% ✅"
-            else:
-                bar_label = f"{item['pct']}% → {proj:.0f}%"
+            bar_label = f"{item['pct']}% → {proj:.0f}%"
         else:
             bar_label = f"{item['pct']}%"
 
