@@ -79,7 +79,7 @@ DEFAULT_CONFIG = {
     "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標
     # データ取得方式: "browser"（browser_cookie3 + claude.ai API）
     #               "oauth" （macOS Keychain の OAuth トークン + api.anthropic.com）
-    "data_source": "browser",
+    "data_source": "oauth",
 }
 
 # 全指標の定義  (key, label_en, label_jp, window_hours)
