@@ -5,7 +5,7 @@
 """
 import subprocess, os, re, pytest
 
-SCRIPT = os.path.join(os.path.dirname(__file__), "claude-usage.5m.py")
+SCRIPT = os.path.join(os.path.dirname(__file__), "src", "claude-usage.5m.py")
 LIMITED_ENV = {
     "HOME": os.path.expanduser("~"),
     "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
@@ -23,7 +23,8 @@ def run_script():
 def test_python_detected():
     """限定環境でも Python が見つかり、bash フォールバックにならない"""
     result = run_script()
-    assert "pip3 install browser-cookie3" not in result.stdout
+    # bash polyglot フォールバック時のエラーメッセージが出ていないことを確認
+    assert "pip3 install requests" not in result.stdout
 
 
 def test_menubar_title_has_percentage():

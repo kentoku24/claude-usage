@@ -1,15 +1,22 @@
 #!/bin/bash
 # -*- coding: utf-8 -*-
 ''''true
-# bash/python polyglot: Python 3.10+ with browser_cookie3 を自動検出
+# bash/python polyglot: Python 3.10+ を自動検出
+# 1st pass: browser_cookie3 あり（browser モード用）
 for py in $("$SHELL" -lic 'which -a python3' 2>/dev/null); do
     "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
     "$py" -c 'import browser_cookie3' 2>/dev/null || continue
     exec "$py" "$0"
 done
+# 2nd pass: requests のみ（oauth モード用）
+for py in $("$SHELL" -lic 'which -a python3' 2>/dev/null); do
+    "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
+    "$py" -c 'import requests' 2>/dev/null || continue
+    exec "$py" "$0"
+done
 echo "⚠️ Claude | color=gray"
 echo "---"
-echo "pip3 install browser-cookie3 requests (Python 3.10+)"
+echo "pip3 install requests (Python 3.10+)"
 exit
 '''
 #
@@ -41,19 +48,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    import browser_cookie3
     import requests
-except ImportError as e:
-    missing = str(e).replace("No module named ", "").strip("'")
+except ImportError:
     print("⚠️ Claude Usage")
     print("---")
-    print(f"依存ライブラリ不足: {missing}")
+    print("依存ライブラリ不足: requests")
     print("ターミナルで実行してください | size=11 color=gray")
-    print("pip3 install browser-cookie3 requests | bash=/bin/sh "
-          "param1=-c param2='pip3 install browser-cookie3 requests' terminal=true")
+    print("pip3 install requests | bash=/bin/sh "
+          "param1=-c param2='pip3 install requests' terminal=true")
     sys.exit(0)
 
+try:
+    import browser_cookie3
+    HAS_BROWSER_COOKIE3 = True
+except ImportError:
+    HAS_BROWSER_COOKIE3 = False
+
 BASE_URL        = "https://claude.ai"
+OAUTH_API_URL   = "https://api.anthropic.com/api/oauth/usage"
 CONFIG_PATH     = Path.home() / ".claude-usage-config.json"
 ALERT_STATE_PATH = Path.home() / ".claude-usage-alerted.json"
 CACHE_PATH      = Path.home() / ".claude-usage-cache.json"
@@ -65,6 +77,9 @@ DEFAULT_CONFIG = {
     "alert_pct":  100,  # 予測使用率のアラート閾値（🔴）
     "bar_width": 12,    # プログレスバーの幅（文字数）
     "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標
+    # データ取得方式: "browser"（browser_cookie3 + claude.ai API）
+    #               "oauth" （macOS Keychain の OAuth トークン + api.anthropic.com）
+    "data_source": "browser",
 }
 
 # 全指標の定義  (key, label_en, label_jp, window_hours)
@@ -166,7 +181,7 @@ def check_and_notify(items, config):
     if changed:
         save_alert_state(state)
 
-# ── Cookie 取得 ─────────────────────────────────────────────
+# ── browser モード: Cookie 取得 ────────────────────────────
 def get_session(cookie_jar):
     s = requests.Session()
     headers = {
@@ -183,7 +198,6 @@ def get_session(cookie_jar):
         s.cookies.set(c.name, c.value, domain=c.domain)
     return s
 
-# ── API 呼び出し ────────────────────────────────────────────
 def get_org_uuid(session):
     r = session.get(f"{BASE_URL}/api/organizations", timeout=10)
     r.raise_for_status()
@@ -194,6 +208,50 @@ def get_org_uuid(session):
 
 def get_usage(session, org_uuid):
     r = session.get(f"{BASE_URL}/api/organizations/{org_uuid}/usage", timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+def fetch_usage_browser():
+    """browser_cookie3 経由で chrome.ai API からクォータ情報を取得する。"""
+    if not HAS_BROWSER_COOKIE3:
+        raise RuntimeError(
+            "browser_cookie3 がインストールされていません。"
+            "「pip3 install browser-cookie3」を実行するか、"
+            "data_source を \"oauth\" に変更してください。"
+        )
+    cookie_jar = browser_cookie3.chrome(domain_name=".claude.ai")
+    session = get_session(cookie_jar)
+    org_uuid = get_org_uuid(session)
+    return get_usage(session, org_uuid)
+
+# ── oauth モード: macOS Keychain トークン ─────────────────
+def get_oauth_token():
+    """macOS Keychain から Claude Code OAuth アクセストークンを取得する。"""
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Keychain に Claude Code-credentials が見つかりません。"
+            "Claude Code にログインしているか確認してください。"
+        )
+    data = json.loads(result.stdout.strip())
+    token = data.get("claudeAiOauth", {}).get("accessToken", "")
+    if not token:
+        raise RuntimeError("OAuth アクセストークンが空です。Claude Code を再ログインしてください。")
+    return token
+
+def fetch_usage_oauth():
+    """macOS Keychain の OAuth トークンで api.anthropic.com からクォータ情報を取得する。"""
+    token = get_oauth_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "claude-code/2.0.32",
+        "Accept": "application/json",
+    }
+    r = requests.get(OAUTH_API_URL, headers=headers, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -306,11 +364,13 @@ def main():
     enabled_keys = config["metrics"]
     metrics = [(k, le, lj, wh) for k, le, lj, wh in ALL_METRICS if k in enabled_keys]
 
+    data_source = config.get("data_source", "browser")
+
     try:
-        cookie_jar = browser_cookie3.chrome(domain_name=".claude.ai")
-        session = get_session(cookie_jar)
-        org_uuid = get_org_uuid(session)
-        usage = get_usage(session, org_uuid)
+        if data_source == "oauth":
+            usage = fetch_usage_oauth()
+        else:
+            usage = fetch_usage_browser()
     except requests.exceptions.ConnectionError:
         cached = load_cache()
         if cached:
@@ -332,22 +392,30 @@ def main():
         return
     except requests.exceptions.HTTPError as e:
         cached = load_cache()
-        if e.response.status_code == 403:
-            reason = "ログインが必要です（前回の値を表示中）"
+        status = e.response.status_code
+        if status in (401, 403):
+            if data_source == "oauth":
+                reason = "トークン期限切れ（前回の値を表示中）"
+            else:
+                reason = "ログインが必要です（前回の値を表示中）"
         else:
-            reason = f"HTTPエラー {e.response.status_code}（前回の値を表示中）"
+            reason = f"HTTPエラー {status}（前回の値を表示中）"
         if cached:
             render_output(cached, config, stale_reason=reason)
         else:
-            if e.response.status_code == 403:
+            if status in (401, 403):
                 print("🔑 Claude  |  color=gray")
                 print("---")
-                print("ログインが必要です  |  color=red")
-                print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
+                if data_source == "oauth":
+                    print("トークン期限切れ  |  color=red")
+                    print("Claude Code を再ログインしてください  |  color=gray size=11")
+                else:
+                    print("ログインが必要です  |  color=red")
+                    print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
             else:
                 print("⚠️ Claude  |  color=gray")
                 print("---")
-                print(f"HTTPエラー: {e.response.status_code}  |  color=red")
+                print(f"HTTPエラー: {status}  |  color=red")
         return
     except Exception as e:
         cached = load_cache()
