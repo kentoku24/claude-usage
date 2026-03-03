@@ -1,15 +1,22 @@
 #!/bin/bash
 # -*- coding: utf-8 -*-
 ''''true
-# bash/python polyglot: Python 3.10+ with browser_cookie3 を自動検出
+# bash/python polyglot: Python 3.10+ を自動検出
+# 1st pass: browser_cookie3 あり（browser モード用）
 for py in $("$SHELL" -lic 'which -a python3' 2>/dev/null); do
     "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
     "$py" -c 'import browser_cookie3' 2>/dev/null || continue
     exec "$py" "$0"
 done
+# 2nd pass: requests のみ（oauth モード用）
+for py in $("$SHELL" -lic 'which -a python3' 2>/dev/null); do
+    "$py" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null || continue
+    "$py" -c 'import requests' 2>/dev/null || continue
+    exec "$py" "$0"
+done
 echo "⚠️ Claude | color=gray"
 echo "---"
-echo "pip3 install browser-cookie3 requests (Python 3.10+)"
+echo "pip3 install requests (Python 3.10+)"
 exit
 '''
 #
@@ -41,19 +48,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    import browser_cookie3
     import requests
-except ImportError as e:
-    missing = str(e).replace("No module named ", "").strip("'")
+except ImportError:
     print("⚠️ Claude Usage")
     print("---")
-    print(f"依存ライブラリ不足: {missing}")
+    print("依存ライブラリ不足: requests")
     print("ターミナルで実行してください | size=11 color=gray")
-    print("pip3 install browser-cookie3 requests | bash=/bin/sh "
-          "param1=-c param2='pip3 install browser-cookie3 requests' terminal=true")
+    print("pip3 install requests | bash=/bin/sh "
+          "param1=-c param2='pip3 install requests' terminal=true")
     sys.exit(0)
 
+try:
+    import browser_cookie3
+    HAS_BROWSER_COOKIE3 = True
+except ImportError:
+    HAS_BROWSER_COOKIE3 = False
+
 BASE_URL        = "https://claude.ai"
+OAUTH_API_URL   = "https://api.anthropic.com/api/oauth/usage"
 CONFIG_PATH     = Path.home() / ".claude-usage-config.json"
 ALERT_STATE_PATH = Path.home() / ".claude-usage-alerted.json"
 CACHE_PATH      = Path.home() / ".claude-usage-cache.json"
@@ -65,6 +77,9 @@ DEFAULT_CONFIG = {
     "alert_pct":  100,  # 予測使用率のアラート閾値（🔴）
     "bar_width": 12,    # プログレスバーの幅（文字数）
     "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標
+    # データ取得方式: "browser"（browser_cookie3 + claude.ai API）
+    #               "oauth" （macOS Keychain の OAuth トークン + api.anthropic.com）
+    "data_source": "browser",
 }
 
 # 全指標の定義  (key, label_en, label_jp, window_hours)
@@ -166,7 +181,7 @@ def check_and_notify(items, config):
     if changed:
         save_alert_state(state)
 
-# ── Cookie 取得 ─────────────────────────────────────────────
+# ── browser モード: Cookie 取得 ────────────────────────────
 def get_session(cookie_jar):
     s = requests.Session()
     headers = {
@@ -183,7 +198,6 @@ def get_session(cookie_jar):
         s.cookies.set(c.name, c.value, domain=c.domain)
     return s
 
-# ── API 呼び出し ────────────────────────────────────────────
 def get_org_uuid(session):
     r = session.get(f"{BASE_URL}/api/organizations", timeout=10)
     r.raise_for_status()
@@ -194,6 +208,50 @@ def get_org_uuid(session):
 
 def get_usage(session, org_uuid):
     r = session.get(f"{BASE_URL}/api/organizations/{org_uuid}/usage", timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+def fetch_usage_browser():
+    """browser_cookie3 経由で chrome.ai API からクォータ情報を取得する。"""
+    if not HAS_BROWSER_COOKIE3:
+        raise RuntimeError(
+            "browser_cookie3 がインストールされていません。"
+            "「pip3 install browser-cookie3」を実行するか、"
+            "data_source を \"oauth\" に変更してください。"
+        )
+    cookie_jar = browser_cookie3.chrome(domain_name=".claude.ai")
+    session = get_session(cookie_jar)
+    org_uuid = get_org_uuid(session)
+    return get_usage(session, org_uuid)
+
+# ── oauth モード: macOS Keychain トークン ─────────────────
+def get_oauth_token():
+    """macOS Keychain から Claude Code OAuth アクセストークンを取得する。"""
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Keychain に Claude Code-credentials が見つかりません。"
+            "Claude Code にログインしているか確認してください。"
+        )
+    data = json.loads(result.stdout.strip())
+    token = data.get("claudeAiOauth", {}).get("accessToken", "")
+    if not token:
+        raise RuntimeError("OAuth アクセストークンが空です。Claude Code を再ログインしてください。")
+    return token
+
+def fetch_usage_oauth():
+    """macOS Keychain の OAuth トークンで api.anthropic.com からクォータ情報を取得する。"""
+    token = get_oauth_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "claude-code/2.0.32",
+        "Accept": "application/json",
+    }
+    r = requests.get(OAUTH_API_URL, headers=headers, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -231,6 +289,39 @@ def calc_projected(pct, resets_at_str, window_hours):
             return None
         burn_rate = pct / time_elapsed_h        # %/hour
         return burn_rate * window_hours          # ウィンドウ終了時の予測値
+    except Exception:
+        return None
+
+def calc_exhaust_info(pct, projected, resets_at_str, window_hours):
+    """7d全消化ガイド: 残りクオータを消化するための目標ペース情報を計算。
+
+    Returns dict or None:
+      - multiplier:     現ペースの何倍必要か (projected > 0 の場合)
+      - target_per_5h:  5時間あたり消費すべき % (当該クオータ基準)
+      - remaining_pct:  残り %
+      - sessions_left:  残りの5時間セッション数
+    """
+    if not resets_at_str or window_hours < 24:   # 5hクオータは対象外
+        return None
+    try:
+        resets_at = datetime.fromisoformat(resets_at_str)
+        now = datetime.now(timezone.utc)
+        time_remaining_h = (resets_at - now).total_seconds() / 3600
+        if time_remaining_h <= 0:
+            return None
+        remaining_pct = 100 - pct
+        if remaining_pct <= 0:
+            return {"multiplier": 0, "target_per_5h": 0,
+                    "remaining_pct": 0, "sessions_left": 0}
+        sessions_left = time_remaining_h / 5
+        target_per_5h = remaining_pct / sessions_left
+        multiplier = round(100 / projected, 1) if projected and projected > 0 else None
+        return {
+            "multiplier": multiplier,
+            "target_per_5h": target_per_5h,
+            "remaining_pct": remaining_pct,
+            "sessions_left": sessions_left,
+        }
     except Exception:
         return None
 
@@ -273,11 +364,13 @@ def main():
     enabled_keys = config["metrics"]
     metrics = [(k, le, lj, wh) for k, le, lj, wh in ALL_METRICS if k in enabled_keys]
 
+    data_source = config.get("data_source", "browser")
+
     try:
-        cookie_jar = browser_cookie3.chrome(domain_name=".claude.ai")
-        session = get_session(cookie_jar)
-        org_uuid = get_org_uuid(session)
-        usage = get_usage(session, org_uuid)
+        if data_source == "oauth":
+            usage = fetch_usage_oauth()
+        else:
+            usage = fetch_usage_browser()
     except requests.exceptions.ConnectionError:
         cached = load_cache()
         if cached:
@@ -299,22 +392,30 @@ def main():
         return
     except requests.exceptions.HTTPError as e:
         cached = load_cache()
-        if e.response.status_code == 403:
-            reason = "ログインが必要です（前回の値を表示中）"
+        status = e.response.status_code
+        if status in (401, 403):
+            if data_source == "oauth":
+                reason = "トークン期限切れ（前回の値を表示中）"
+            else:
+                reason = "ログインが必要です（前回の値を表示中）"
         else:
-            reason = f"HTTPエラー {e.response.status_code}（前回の値を表示中）"
+            reason = f"HTTPエラー {status}（前回の値を表示中）"
         if cached:
             render_output(cached, config, stale_reason=reason)
         else:
-            if e.response.status_code == 403:
+            if status in (401, 403):
                 print("🔑 Claude  |  color=gray")
                 print("---")
-                print("ログインが必要です  |  color=red")
-                print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
+                if data_source == "oauth":
+                    print("トークン期限切れ  |  color=red")
+                    print("Claude Code を再ログインしてください  |  color=gray size=11")
+                else:
+                    print("ログインが必要です  |  color=red")
+                    print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
             else:
                 print("⚠️ Claude  |  color=gray")
                 print("---")
-                print(f"HTTPエラー: {e.response.status_code}  |  color=red")
+                print(f"HTTPエラー: {status}  |  color=red")
         return
     except Exception as e:
         cached = load_cache()
@@ -346,6 +447,7 @@ def main():
             "projected":    proj,
             "reset":        format_reset(resets_at),
             "resets_at_raw": resets_at,
+            "exhaust_info": calc_exhaust_info(pct, proj, resets_at, window_hours),
         })
 
     if not items:
@@ -383,15 +485,41 @@ def render_output(items, config, stale_reason=None):
         print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
         print("---")
 
+    # 5h セクション用: 7d全消化目標を算出
+    seven_day_mult = None
+    for i in items:
+        info = i.get("exhaust_info")
+        if info and info.get("multiplier") is not None:
+            seven_day_mult = info["multiplier"]
+            break  # metrics 定義順で最初の 7d を採用
+
     for item in items:
         proj = item["projected"]
         icon = burn_icon(proj, config)
         c    = pct_color(item["pct"])
-        bar  = progress_bar(item["pct"], proj, width=config["bar_width"])
         wh = item["window_hours"]
         window_label = f"{wh}h" if wh < 24 else f"{wh // 24}d"
+
+        # 5h セクションのみ: 7d全消化目標
+        # 表示条件: 5h予測 < 100%（利用不可リスクなし）かつ目標 < 予測（達成圏内）
+        target_5h = None
+        if wh < 24 and seven_day_mult is not None and proj is not None and proj < 100:
+            candidate = round(proj * seven_day_mult, 1)
+            if candidate < proj:
+                target_5h = candidate
+
+        bar = progress_bar(item["pct"], proj, width=config["bar_width"])
+
         print(f"{icon} {item['label_jp']}  |  color={c}")
-        bar_label = f"{item['pct']}% → {proj:.0f}%" if proj is not None else f"{item['pct']}%"
+
+        # バーラベル
+        if target_5h is not None:
+            bar_label = f"{item['pct']}%→{proj:.0f}% 🎯{target_5h:.0f}%"
+        elif proj is not None:
+            bar_label = f"{item['pct']}% → {proj:.0f}%"
+        else:
+            bar_label = f"{item['pct']}%"
+
         print(f"   {bar} {bar_label}  |  font=Menlo size=12 color={c}")
         if proj is not None:
             proj_color = (
