@@ -59,22 +59,22 @@ brew install --cask swiftbar
 | **browser** | `"browser"` | `browser-cookie3` + `requests` | Chrome の Cookie（claude.ai ログイン済み） |
 | **oauth** | `"oauth"` | `requests` のみ | macOS Keychain の Claude Code OAuth トークン |
 
-**oauth モード**（推奨）: Claude Code にログイン済みであれば追加設定不要。`browser-cookie3` も不要。
+**oauth モード**（デフォルト）: Claude Code にログイン済みであれば追加設定不要。`browser-cookie3` も不要。
 
 ```bash
 pip3 install requests
 ```
 
-**browser モード**（デフォルト）: Chrome で claude.ai にログインしている環境向け。
+**browser モード**: Chrome で claude.ai にログインしている環境向け。
 
 ```bash
 pip3 install browser-cookie3 requests
 ```
 
-`~/.claude-usage-config.json` で方式を指定します：
+`~/.claude-usage-config.json` で方式を切り替えられます：
 
 ```json
-{"data_source": "oauth"}
+{"data_source": "browser"}
 ```
 
 > **重要**: SwiftBar は独自の環境でスクリプトを実行するため、shebang に Python の絶対パスを指定する必要があります。
@@ -195,7 +195,7 @@ python3 -c "import browser_cookie3; import sys; print(sys.executable)"
 
 | キー | デフォルト | 説明 |
 |-----|-----------|------|
-| `data_source` | `"browser"` | データ取得方式（`"browser"` or `"oauth"`） |
+| `data_source` | `"oauth"` | データ取得方式（`"oauth"` or `"browser"`） |
 | `warn_pct` | `80` | 警告通知を送る予測使用率の閾値（🟡） |
 | `alert_pct` | `100` | アラート通知を送る予測使用率の閾値（🔴） |
 | `bar_width` | `12` | プログレスバーの文字数 |
