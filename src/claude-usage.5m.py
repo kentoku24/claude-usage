@@ -471,9 +471,20 @@ def render_output(items, config, stale_reason=None):
     stale_reason が指定されていればキャッシュ表示であることを示す。
     """
     # ── メニューバー タイトル ──────────────────────────────────
-    bar_title = " ".join(
-        f"{burn_icon(i['projected'], config)} {i['pct']}%" for i in items
-    )
+    # 5h はフル表示、7d 系は悪い方のアイコンのみ（詳細はドロップダウン）
+    _icon_severity = {"🟢": 0, "🟡": 1, "🟠": 2, "🔴": 3}
+    bar_parts = []
+    worst_7d_icon = None
+    for i in items:
+        icon = burn_icon(i["projected"], config)
+        if i["window_hours"] < 24:
+            bar_parts.append(f"{icon} {i['pct']}%")
+        else:
+            if worst_7d_icon is None or _icon_severity.get(icon, 0) > _icon_severity.get(worst_7d_icon, 0):
+                worst_7d_icon = icon
+    if worst_7d_icon is not None:
+        bar_parts.append(worst_7d_icon)
+    bar_title = " ".join(bar_parts)
     if stale_reason:
         bar_title = f"⚠️ {bar_title}"
     print(bar_title)
