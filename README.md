@@ -1,6 +1,7 @@
 # Claude Usage Menu Bar Widget
 
 Claude.ai の使用量（セッション / 全モデル / Sonnet）を Mac のメニューバーにリアルタイム表示する SwiftBar プラグイン。
+探して見つからなかったので自作したが、 https://github.com/steipete/CodexBar というOSSがすでにあった。
 
 ## 表示内容
 
