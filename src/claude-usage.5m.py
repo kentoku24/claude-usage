@@ -41,10 +41,11 @@ exit
 #   例: {"warn_pct": 70, "alert_pct": 90, "bar_width": 16,
 #        "metrics": ["five_hour", "seven_day"]}
 
+import os
 import sys
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -69,6 +70,7 @@ OAUTH_API_URL   = "https://api.anthropic.com/api/oauth/usage"
 CONFIG_PATH     = Path.home() / ".claude-usage-config.json"
 ALERT_STATE_PATH = Path.home() / ".claude-usage-alerted.json"
 CACHE_PATH      = Path.home() / ".claude-usage-cache.json"
+CODEX_HOME      = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 
 # デフォルト設定（~/.claude-usage-config.json で上書き可能）
 DEFAULT_CONFIG = {
@@ -76,7 +78,7 @@ DEFAULT_CONFIG = {
     "warn_pct":    80,  # 予測使用率の警告閾値（🟠）
     "alert_pct":  100,  # 予測使用率のアラート閾値（🔴）
     "bar_width": 12,    # プログレスバーの幅（文字数）
-    "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標
+    "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標（Codex: "codex_primary", "codex_secondary"）
     # データ取得方式: "browser"（browser_cookie3 + claude.ai API）
     #               "oauth" （macOS Keychain の OAuth トークン + api.anthropic.com）
     "data_source": "oauth",
@@ -87,6 +89,8 @@ ALL_METRICS = [
     ("five_hour",        "Session", "現在のセッション",   5),
     ("seven_day",        "All",     "すべてのモデル",    168),
     ("seven_day_sonnet", "Sonnet",  "Sonnet のみ",      168),
+    ("codex_primary",    "Codex5h", "Codex セッション",   5),
+    ("codex_secondary",  "CodexWk", "Codex 週間",       168),
 ]
 
 # ── 設定ロード ───────────────────────────────────────────────
@@ -255,6 +259,69 @@ def fetch_usage_oauth():
     r.raise_for_status()
     return r.json()
 
+# ── Codex モード: ローカルセッションファイル ──────────────────
+def fetch_usage_codex():
+    """~/.codex/sessions/ の JSONL から最新の rate_limits を取得し、
+    Claude API 互換形式 (utilization, resets_at) に変換して返す。"""
+    sessions_dir = CODEX_HOME / "sessions"
+    if not sessions_dir.exists():
+        raise RuntimeError(
+            f"Codex セッションディレクトリが見つかりません: {sessions_dir}\n"
+            "Codex CLI がインストールされているか確認してください。"
+        )
+
+    # 最新の rollout-*.jsonl を探す（最大7日遡る）
+    now = datetime.now(timezone.utc)
+    latest_rl = None
+    latest_ts = None
+    for days_ago in range(8):
+        d = now - timedelta(days=days_ago)
+        day_dir = sessions_dir / f"{d.year}" / f"{d.month:02d}" / f"{d.day:02d}"
+        if not day_dir.exists():
+            continue
+        for f in sorted(day_dir.glob("rollout-*.jsonl"), reverse=True):
+            for line in reversed(f.read_text(errors="replace").splitlines()):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                payload = record.get("payload") or {}
+                rl = payload.get("rate_limits")
+                if rl and record.get("type") == "event_msg" and payload.get("type") == "token_count":
+                    ts_str = record.get("timestamp", "")
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except Exception:
+                        ts = now
+                    if latest_ts is None or ts > latest_ts:
+                        latest_rl = rl
+                        latest_ts = ts
+            if latest_rl:
+                break
+        if latest_rl:
+            break
+
+    if latest_rl is None:
+        raise RuntimeError("Codex のセッションファイルに rate_limits が見つかりません。")
+
+    # primary / secondary → Claude API 互換形式に変換
+    result = {}
+    for codex_key, our_key in [("primary", "codex_primary"), ("secondary", "codex_secondary")]:
+        bucket = latest_rl.get(codex_key)
+        if bucket is None:
+            continue
+        used_pct = bucket.get("used_percent", 0)
+        resets_in = bucket.get("resets_in_seconds", 0)
+        resets_at = (latest_ts + timedelta(seconds=resets_in)).isoformat()
+        result[our_key] = {
+            "utilization": used_pct,
+            "resets_at": resets_at,
+        }
+    return result
+
+
 # ── 表示ヘルパー ─────────────────────────────────────────────
 def pct_color(pct):
     if pct >= 85: return "red"
@@ -365,68 +432,52 @@ def main():
     metrics = [(k, le, lj, wh) for k, le, lj, wh in ALL_METRICS if k in enabled_keys]
 
     data_source = config.get("data_source", "browser")
+    has_codex_metrics = any(k.startswith("codex_") for k in enabled_keys)
+    has_claude_metrics = any(not k.startswith("codex_") for k in enabled_keys)
 
-    try:
-        if data_source == "oauth":
-            usage = fetch_usage_oauth()
-        else:
-            usage = fetch_usage_browser()
-    except requests.exceptions.ConnectionError:
-        cached = load_cache()
-        if cached:
-            render_output(cached, config, stale_reason="オフライン（前回の値を表示中）")
-        else:
-            print("📵 Claude  |  color=gray")
-            print("---")
-            print("オフライン  |  color=gray")
-        return
-    except requests.exceptions.Timeout:
-        cached = load_cache()
-        if cached:
-            render_output(cached, config, stale_reason="タイムアウト（前回の値を表示中）")
-        else:
-            print("⏳ Claude  |  color=gray")
-            print("---")
-            print("タイムアウト  |  color=gray")
-            print("↺ 再試行  |  refresh=true")
-        return
-    except requests.exceptions.HTTPError as e:
-        cached = load_cache()
-        status = e.response.status_code
-        if status in (401, 403):
+    usage = {}
+    claude_error = None
+
+    # Claude usage の取得
+    if has_claude_metrics:
+        try:
             if data_source == "oauth":
-                reason = "トークン期限切れ（前回の値を表示中）"
+                usage.update(fetch_usage_oauth())
             else:
-                reason = "ログインが必要です（前回の値を表示中）"
-        else:
-            reason = f"HTTPエラー {status}（前回の値を表示中）"
+                usage.update(fetch_usage_browser())
+        except requests.exceptions.ConnectionError:
+            claude_error = "オフライン"
+        except requests.exceptions.Timeout:
+            claude_error = "タイムアウト"
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code
+            if status in (401, 403):
+                claude_error = "トークン期限切れ" if data_source == "oauth" else "ログインが必要です"
+            else:
+                claude_error = f"HTTPエラー {status}"
+        except Exception as e:
+            claude_error = str(e)[:120]
+
+    # Codex usage の取得
+    codex_error = None
+    if has_codex_metrics:
+        try:
+            usage.update(fetch_usage_codex())
+        except Exception as e:
+            codex_error = str(e)[:120]
+
+    # 両方失敗した場合はキャッシュにフォールバック
+    if claude_error and (not has_codex_metrics or codex_error):
+        cached = load_cache()
+        reason = f"{claude_error}（前回の値を表示中）"
         if cached:
             render_output(cached, config, stale_reason=reason)
         else:
-            if status in (401, 403):
-                print("🔑 Claude  |  color=gray")
-                print("---")
-                if data_source == "oauth":
-                    print("トークン期限切れ  |  color=red")
-                    print("Claude Code を再ログインしてください  |  color=gray size=11")
-                else:
-                    print("ログインが必要です  |  color=red")
-                    print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
-            else:
-                print("⚠️ Claude  |  color=gray")
-                print("---")
-                print(f"HTTPエラー: {status}  |  color=red")
-        return
-    except Exception as e:
-        cached = load_cache()
-        if cached:
-            render_output(cached, config, stale_reason=f"エラー（前回の値を表示中）")
-        else:
-            print("⚠️ Claude Usage")
+            print("⚠️ Claude  |  color=gray")
             print("---")
-            print(f"エラー: {str(e)[:120]}")
-            print("---")
-            print("設定ページを開く | href=https://claude.ai/settings/usage")
+            print(f"{claude_error}  |  color=red")
+            if codex_error:
+                print(f"Codex: {codex_error}  |  color=red")
         return
 
     # 有効な指標だけ抽出し、各自の burn rate 予測も計算
@@ -544,7 +595,12 @@ def render_output(items, config, stale_reason=None):
             print(f"   🔄 {item['reset']}  |  size=11 color=gray")
         print("---")
 
-    print("↗ claude.ai/settings/usage  |  href=https://claude.ai/settings/usage")
+    has_codex = any(i["key"].startswith("codex_") for i in items)
+    has_claude = any(not i["key"].startswith("codex_") for i in items)
+    if has_claude:
+        print("↗ claude.ai/settings/usage  |  href=https://claude.ai/settings/usage")
+    if has_codex:
+        print("↗ codex/settings/usage  |  href=https://chatgpt.com/codex/settings/usage")
     print("↺ 今すぐ更新  |  refresh=true")
 
 
