@@ -1,6 +1,7 @@
 # Claude Usage Menu Bar Widget
 
 Claude.ai の使用量（セッション / 全モデル / Sonnet）を Mac のメニューバーにリアルタイム表示する SwiftBar プラグイン。
+探して見つからなかったので自作したが、 https://github.com/steipete/CodexBar というOSSがすでにあった。
 
 ## 表示内容
 
@@ -50,10 +51,31 @@ brew install --cask swiftbar
 
 または [swiftbar.app](https://swiftbar.app) からダウンロード。
 
-### 2. 依存ライブラリをインストール
+### 2. データ取得方式を選ぶ
+
+2つのデータ取得方式があります：
+
+| 方式 | 設定値 | 依存 | 認証 |
+|------|--------|------|------|
+| **browser** | `"browser"` | `browser-cookie3` + `requests` | Chrome の Cookie（claude.ai ログイン済み） |
+| **oauth** | `"oauth"` | `requests` のみ | macOS Keychain の Claude Code OAuth トークン |
+
+**oauth モード**（デフォルト）: Claude Code にログイン済みであれば追加設定不要。`browser-cookie3` も不要。
+
+```bash
+pip3 install requests
+```
+
+**browser モード**: Chrome で claude.ai にログインしている環境向け。
 
 ```bash
 pip3 install browser-cookie3 requests
+```
+
+`~/.claude-usage-config.json` で方式を切り替えられます：
+
+```json
+{"data_source": "browser"}
 ```
 
 > **重要**: SwiftBar は独自の環境でスクリプトを実行するため、shebang に Python の絶対パスを指定する必要があります。
@@ -87,10 +109,13 @@ mise which python3
 mkdir -p ~/Documents/SwiftBar
 
 # スクリプトをコピー
-cp claude-usage.5m.py ~/Documents/SwiftBar/
+cp src/claude-usage.5m.py ~/Documents/SwiftBar/
 
 # 実行権限を付与
 chmod +x ~/Documents/SwiftBar/claude-usage.5m.py
+
+# 設定ファイルをコピー（お好みで編集）
+cp config.example.json ~/.claude-usage-config.json
 ```
 
 ### 4. SwiftBar を起動してフォルダを選択
@@ -101,19 +126,31 @@ chmod +x ~/Documents/SwiftBar/claude-usage.5m.py
 
 ### 5. 動作確認
 
-SwiftBar アイコン → **Refresh All** で更新。
-
-表示されない場合はターミナルで直接実行して確認：
+**ステップ1: スクリプト単体で動作確認**
 
 ```bash
-# SwiftBar と同じ環境変数をセットして実行
-export SWIFTBAR=1
-python3 ~/Documents/SwiftBar/claude-usage.5m.py
+bash /path/to/src/claude-usage.5m.py
 ```
+
+`%` を含む出力が出れば正常。`pip3 install...` と出た場合は Python 検出の問題。
+
+**ステップ2: SwiftBar を更新**
+
+メニューバーの SwiftBar アイコン → **Refresh All**
+
+**ステップ3: それでも表示されない場合は再起動**
+
+SwiftBar 自体の Glitch でメニューバーアイテムが消えることがあります（スクリプトが正常でも起きます）。
+
+```bash
+pkill -x SwiftBar && open -a SwiftBar
+```
+
+> スクリプト単体（ステップ1）で正常出力が出ているのにメニューバーに出ない場合は SwiftBar の再起動で解消します。
 
 ## トラブルシューティング
 
-### `依存ライブラリ不足: browser_cookie3`
+### `依存ライブラリ不足: browser_cookie3`（browser モード）
 
 SwiftBar が別の Python を使っています。shebang を `browser_cookie3` がインストールされている Python の絶対パスに変更してください。
 
@@ -124,16 +161,65 @@ python3 -c "import browser_cookie3; import sys; print(sys.executable)"
 
 出力されたパスを shebang に設定します。
 
-### `エラー: Keychain access failed` などの認証エラー
+または、oauth モードに切り替えれば `browser-cookie3` は不要です：
 
-Chrome で claude.ai にログインしているか確認してください。ブラウザで一度 `claude.ai/settings/usage` を開いてから再試行してください。
+```json
+{"data_source": "oauth"}
+```
+
+### 認証エラー（401 / 403）
+
+**browser モード**: Chrome で claude.ai にログインしているか確認してください。ブラウザで一度 `claude.ai/settings/usage` を開いてから再試行。
+
+**oauth モード**: Claude Code のトークンが期限切れです。Claude Code を再ログイン（`/logout` → `claude`）してください。
 
 ### ネット切断時
 
 - 📵 Claude（グレー）→ オフライン
 - ⏳ Claude（グレー）→ タイムアウト（再試行ボタンあり）
 
-## 更新頻度のカスタマイズ
+## カスタマイズ
+
+### 設定ファイル（`~/.claude-usage-config.json`）
+
+以下の設定ファイルを作成することで動作をカスタマイズできます。ファイルがない場合はデフォルト値が使われます。
+
+```json
+{
+  "data_source": "oauth",
+  "warn_pct":  80,
+  "alert_pct": 100,
+  "bar_width": 12,
+  "metrics": ["five_hour", "seven_day", "seven_day_sonnet"]
+}
+```
+
+| キー | デフォルト | 説明 |
+|-----|-----------|------|
+| `data_source` | `"oauth"` | データ取得方式（`"oauth"` or `"browser"`） |
+| `warn_pct` | `80` | 警告通知を送る予測使用率の閾値（🟡） |
+| `alert_pct` | `100` | アラート通知を送る予測使用率の閾値（🔴） |
+| `bar_width` | `12` | プログレスバーの文字数 |
+| `metrics` | 全3指標 | 表示する指標のリスト（順序も反映） |
+
+**設定例**: Sonnet だけ表示、70% 超で警告
+
+```json
+{
+  "warn_pct": 70,
+  "metrics": ["seven_day_sonnet"]
+}
+```
+
+### macOS 通知アラート
+
+予測使用率が `warn_pct`（デフォルト 80%）または `alert_pct`（デフォルト 100%）を超えると、macOS の通知センターに通知が届きます。
+
+- 同じリセットサイクル内で各閾値につき **1回のみ** 送信されます（連続通知なし）
+- リセット後は自動的にリセットされます
+- 通知の状態は `~/.claude-usage-alerted.json` で管理されます
+
+### 更新頻度のカスタマイズ
 
 ファイル名の `5m` が更新間隔です。変更する場合はファイルをリネームします：
 
@@ -145,9 +231,28 @@ mv ~/Documents/SwiftBar/claude-usage.5m.py ~/Documents/SwiftBar/claude-usage.1m.
 mv ~/Documents/SwiftBar/claude-usage.5m.py ~/Documents/SwiftBar/claude-usage.10m.py
 ```
 
+## テスト
+
+```bash
+python3 -m pytest test_claude_usage.py -v
+```
+
+| テスト | 検証内容 |
+|--------|---------|
+| `test_python_detected` | SwiftBar相当の限定環境でPythonが見つかる |
+| `test_menubar_title_has_percentage` | 1行目に `%` が含まれる（数値表示） |
+| `test_output_has_separator` | SwiftBarフォーマット `---` が含まれる |
+
+> Claude.aiにアクセスできる環境（ログイン済みChrome）が必要です。
+
 ## 仕組み
 
-Chrome の Cookie を使って `claude.ai/api/organizations/{uuid}/usage` という JSON エンドポイントを直接叩いています。HTML スクレイピングではないため、UI が変わっても動作します。
+JSON API を直接叩いて使用量データを取得します（HTML スクレイピングではないため、UI 変更の影響を受けません）。
+
+| 方式 | エンドポイント |
+|------|--------------|
+| browser | `claude.ai/api/organizations/{uuid}/usage`（Chrome Cookie 認証） |
+| oauth | `api.anthropic.com/api/oauth/usage`（macOS Keychain OAuth トークン認証） |
 
 取得するデータ：
 

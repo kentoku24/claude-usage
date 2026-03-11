@@ -1,0 +1,8 @@
+{
+  "data_source": "oauth",
+  "caution_pct": 60,
+  "warn_pct": 80,
+  "alert_pct": 100,
+  "bar_width": 12,
+  "metrics": ["five_hour", "seven_day", "seven_day_sonnet"]
+}
