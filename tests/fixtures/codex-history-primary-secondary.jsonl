@@ -1,0 +1,4 @@
+{not valid json
+{"type":"note","timestamp":"2026-03-29T08:50:00+00:00","payload":{"message":"ignore me"}}
+{"type":"event_msg","timestamp":"2026-03-29T08:40:00+00:00","payload":{"type":"token_count","rate_limits":{"primary":{"usage":91,"window_minutes":300,"resets_at":1893283200},"secondary":{"percentage":15,"limit_window_seconds":604800,"reset_at":"2029-12-31T00:00:00+00:00"}}}}
+{"type":"event_msg","timestamp":"2026-03-29T08:44:18.991000+00:00","payload":{"type":"token_count","rate_limits":{"primary":{"usage":4,"window_minutes":300,"resets_at":1893456000},"secondary":{"percentage":81,"limit_window_seconds":604800,"reset_at":"2030-01-08T00:00:00+00:00"}}}}

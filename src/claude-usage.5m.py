@@ -71,6 +71,8 @@ CONFIG_PATHS    = [CONFIG_PATH]
 ALERT_STATE_PATH = Path.home() / ".claude-usage-alerted.json"
 CACHE_PATH      = Path.home() / ".claude-usage-cache.json"
 CACHE_PATHS     = [CACHE_PATH]
+CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
+CODEX_ARCHIVED_SESSIONS_ROOT = Path.home() / ".codex" / "archived_sessions"
 
 # デフォルト設定（~/.claude-usage-config.json で上書き可能）
 DEFAULT_CONFIG = {
@@ -167,11 +169,267 @@ def load_cache(provider):
             if payload.get("provider") != provider:
                 continue
             result = payload.get("result")
-            if isinstance(result, dict):
+            if isinstance(result, dict) and isinstance(result.get("items"), list):
                 return result
         except Exception:
             continue
     return None
+
+
+def make_provider_result(status, reason="", snapshot_time=None, source_path=None, cacheable=False, items=None):
+    return {
+        "status": status,
+        "reason": reason,
+        "snapshot_time": snapshot_time,
+        "source_path": source_path,
+        "cacheable": cacheable,
+        "items": items or [],
+    }
+
+
+def iter_jsonl_objects(path):
+    with Path(path).open(encoding="utf-8") as handle:
+        for raw in handle:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                yield json.loads(raw)
+            except Exception:
+                continue
+
+
+def list_codex_history_paths(root, recursive):
+    root = Path(root)
+    if not root.exists():
+        return []
+    if recursive:
+        return sorted(root.rglob("*.jsonl"))
+    return sorted(root.glob("*.jsonl"))
+
+
+def parse_iso_datetime(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def coerce_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def first_number(*values):
+    for value in values:
+        number = coerce_number(value)
+        if number is not None:
+            return number
+    return None
+
+
+def normalize_window_hours(window):
+    minutes = coerce_number(window.get("window_minutes"))
+    if minutes is not None:
+        hours = minutes / 60
+        return int(hours) if float(hours).is_integer() else hours
+
+    seconds = coerce_number(window.get("limit_window_seconds"))
+    if seconds is not None:
+        hours = seconds / 3600
+        return int(hours) if float(hours).is_integer() else hours
+
+    return None
+
+
+def normalize_reset_time(window):
+    resets_at = window.get("resets_at")
+    if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
+        try:
+            return datetime.fromtimestamp(resets_at, timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    parsed_resets_at = parse_iso_datetime(resets_at)
+    if parsed_resets_at is not None:
+        return parsed_resets_at.isoformat()
+
+    reset_at = window.get("reset_at")
+    if isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool):
+        try:
+            return datetime.fromtimestamp(reset_at, timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    parsed_reset_at = parse_iso_datetime(reset_at)
+    if parsed_reset_at is not None:
+        return parsed_reset_at.isoformat()
+
+    return None
+
+
+def get_codex_window(rate_limits, key):
+    if key == "primary_window":
+        return rate_limits.get("primary") or rate_limits.get("primary_window")
+    if key == "secondary_window":
+        return rate_limits.get("secondary") or rate_limits.get("secondary_window")
+    return None
+
+
+def codex_window_labels(key, window_hours):
+    if key == "primary_window":
+        return "5-hour limit", "現在のセッション"
+    if key == "secondary_window":
+        if window_hours == 168:
+            return "7-day limit", "7日間の上限"
+        return "secondary limit", "補助ウィンドウ"
+    return "usage limit", "使用量"
+
+
+def normalize_codex_window(key, raw_window):
+    if not isinstance(raw_window, dict):
+        return None
+
+    pct = first_number(
+        raw_window.get("used_percent"),
+        raw_window.get("utilization"),
+        raw_window.get("percentage"),
+        raw_window.get("usage"),
+    )
+    window_hours = normalize_window_hours(raw_window)
+    if pct is None or window_hours is None:
+        return None
+
+    pct = int(pct) if float(pct).is_integer() else pct
+    resets_at_raw = normalize_reset_time(raw_window)
+    label_en, label_jp = codex_window_labels(key, window_hours)
+    projected = calc_projected(pct, resets_at_raw, window_hours)
+
+    return {
+        "key": key,
+        "label_en": label_en,
+        "label_jp": label_jp,
+        "window_hours": window_hours,
+        "pct": pct,
+        "resets_at_raw": resets_at_raw,
+        "projected": projected,
+        "reset": format_reset(resets_at_raw),
+        "exhaust_info": calc_exhaust_info(pct, projected, resets_at_raw, window_hours),
+    }
+
+
+def extract_codex_snapshot_time(record, payload, path):
+    for candidate in (record.get("timestamp"), payload.get("timestamp")):
+        parsed = parse_iso_datetime(candidate)
+        if parsed is not None:
+            return parsed
+    return datetime.fromtimestamp(Path(path).stat().st_mtime, timezone.utc)
+
+
+def extract_codex_snapshot(path, record):
+    if not isinstance(record, dict):
+        return None
+    if record.get("type") != "event_msg":
+        return None
+
+    payload = record.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "token_count":
+        return None
+
+    rate_limits = payload.get("rate_limits")
+    if not isinstance(rate_limits, dict):
+        return None
+
+    items = []
+    for key in ("primary_window", "secondary_window"):
+        item = normalize_codex_window(key, get_codex_window(rate_limits, key))
+        if item is not None:
+            items.append(item)
+
+    if not items:
+        return None
+
+    snapshot_dt = extract_codex_snapshot_time(record, payload, path)
+    return {
+        "snapshot_dt": snapshot_dt,
+        "snapshot_time": snapshot_dt.isoformat(),
+        "source_path": str(path),
+        "items": items,
+    }
+
+
+def load_codex_history_items(session_paths=None, archived_paths=None):
+    try:
+        if session_paths is None:
+            session_paths = list_codex_history_paths(CODEX_SESSIONS_ROOT, recursive=True)
+        else:
+            session_paths = [Path(path) for path in session_paths]
+
+        if archived_paths is None:
+            archived_paths = list_codex_history_paths(CODEX_ARCHIVED_SESSIONS_ROOT, recursive=False)
+        else:
+            archived_paths = [Path(path) for path in archived_paths]
+    except OSError as exc:
+        return make_provider_result(
+            "unreadable",
+            reason=f"Unable to discover Codex history: {exc}",
+        )
+
+    candidate_paths = session_paths + archived_paths
+    if not candidate_paths:
+        return make_provider_result(
+            "missing",
+            reason="No Codex history files found.",
+        )
+
+    newest_snapshot = None
+    unreadable_error = None
+    for path in candidate_paths:
+        try:
+            for record in iter_jsonl_objects(path):
+                snapshot = extract_codex_snapshot(path, record)
+                if snapshot is None:
+                    continue
+                if newest_snapshot is None or snapshot["snapshot_dt"] > newest_snapshot["snapshot_dt"]:
+                    newest_snapshot = snapshot
+        except OSError as exc:
+            if unreadable_error is None:
+                unreadable_error = exc
+            continue
+
+    if unreadable_error is not None:
+        return make_provider_result(
+            "unreadable",
+            reason=f"Unable to read Codex history: {unreadable_error}",
+        )
+
+    if newest_snapshot is None:
+        return make_provider_result(
+            "unavailable",
+            reason="No Codex rate limit snapshots found.",
+        )
+
+    return make_provider_result(
+        "ok",
+        snapshot_time=newest_snapshot["snapshot_time"],
+        source_path=newest_snapshot["source_path"],
+        cacheable=True,
+        items=newest_snapshot["items"],
+    )
 
 def send_notification(title, message):
     """macOS 通知センターに通知を送る。"""
