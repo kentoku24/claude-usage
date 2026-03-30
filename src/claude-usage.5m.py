@@ -43,6 +43,7 @@ exit
 
 import sys
 import json
+import math
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -227,12 +228,14 @@ def coerce_number(value):
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     if isinstance(value, str):
         try:
-            return float(value)
+            number = float(value)
         except ValueError:
             return None
+        return number if math.isfinite(number) else None
     return None
 
 

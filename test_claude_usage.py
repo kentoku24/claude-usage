@@ -408,3 +408,40 @@ def test_load_codex_history_items_treats_invalid_numeric_reset_as_missing(tmp_pa
     assert result["items"][0]["pct"] == 17
     assert result["items"][0]["resets_at_raw"] is None
     assert result["items"][0]["reset"] == ""
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"used_percent": float("nan")},
+        {"used_percent": float("inf")},
+        {"window_minutes": float("nan")},
+        {"window_minutes": None, "limit_window_seconds": float("inf")},
+    ],
+)
+def test_load_codex_history_items_ignores_non_finite_usage_and_window_values(tmp_path, overrides):
+    module = load_module()
+    fixture = tmp_path / "codex-history-bad-metric.jsonl"
+    primary_window = {
+        "used_percent": 17,
+        "window_minutes": 300,
+        "resets_at": "2030-01-01T00:00:00+00:00",
+    }
+    primary_window.update(overrides)
+    fixture.write_text(
+        json.dumps({
+            "type": "event_msg",
+            "timestamp": "2026-03-29T10:00:00+00:00",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "primary_window": primary_window,
+                },
+            },
+        }) + "\n"
+    )
+
+    result = module.load_codex_history_items(session_paths=[fixture], archived_paths=[])
+
+    assert result["status"] == "unavailable"
+    assert result["items"] == []
