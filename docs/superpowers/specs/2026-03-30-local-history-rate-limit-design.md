@@ -47,7 +47,27 @@ Keep the script as a single executable file for now, but split the data-loading 
 - `load_claude_history_items()`
 - shared file-scanning and JSONL parsing helpers
 
-Each provider returns a normalized list of items with this shape:
+Each provider returns a structured result, not just a raw item list:
+
+```python
+{
+    "status": "ok",  # ok | missing | unreadable | unavailable
+    "reason": "",
+    "snapshot_time": "2026-03-30T12:34:56+00:00",
+    "source_path": "/Users/.../file.jsonl",
+    "cacheable": True,
+    "items": [...],
+}
+```
+
+Status meanings:
+
+- `ok`: trustworthy local quota snapshot found
+- `missing`: no candidate local files found
+- `unreadable`: candidate files exist but could not be parsed or read
+- `unavailable`: local files were readable but did not contain trustworthy quota percentages
+
+When `status == "ok"`, `items` is a normalized list with this shape:
 
 ```python
 {
@@ -63,7 +83,7 @@ Each provider returns a normalized list of items with this shape:
 }
 ```
 
-The provider layer is responsible only for extracting facts from local files. Existing helpers remain responsible for:
+The provider layer is responsible only for extracting facts and result-state from local files. Existing helpers remain responsible for:
 
 - projected usage calculation
 - reset text formatting
@@ -95,11 +115,14 @@ Extraction rules:
 - Convert Unix `resets_at` to ISO8601 UTC strings
 - Map window minutes or seconds to `window_hours`
 - Ignore malformed or partial rows without aborting the scan
+- Use the parsed event timestamp from the same JSONL row as the global ordering key
+- If an event timestamp is missing or invalid, fall back to file modification time only as a last resort
 
 Ordering:
 
-- Scan newest files first
-- Within a file, the newest valid token-count row wins
+- Scan all candidate files
+- Extract candidate `token_count.rate_limits` snapshots plus their event timestamps
+- Choose the globally newest valid snapshot across all files
 - The selected Codex snapshot must come from one `token_count.rate_limits` event
 - Do not merge primary from one event with secondary from another event
 - If the newest valid snapshot contains only one usable window, render only that window and mark the rest unavailable
@@ -120,14 +143,14 @@ Phase 1 contract:
 - The parser only accepts explicit local rows that already contain both:
   - a percentage value
   - a reset timestamp or reset description that can be normalized
-- The parser may use regex extraction from saved assistant text if the `%` and reset details are present in the transcript itself
 - The parser must not derive percentages from token counts, message counts, or `~/.claude/stats-cache.json`
 - If no explicit percentage-bearing local row exists, Claude returns no items
+- Generic regex extraction from arbitrary assistant transcript text is not allowed in Phase 1
 
 Phase 1 user-visible behavior:
 
 - Claude credential and network access is removed immediately
-- Claude shows a local-history-unavailable state until an explicit local quota snapshot is found
+- Claude shows a deterministic local-history-unavailable state via provider result `status == "unavailable"` until an explicit local quota snapshot is found
 - No guessed or synthesized `%` values are allowed
 
 Phase 2 gate:
@@ -159,6 +182,14 @@ Exact migration rule:
 - no warning banner is required in the widget UI
 - README and config examples must mark `data_source` as deprecated
 - tests must verify that `"oauth"` and `"browser"` no longer change runtime behavior
+
+Config precedence matrix:
+
+- if `provider` is present and valid, use it
+- else if deprecated `data_source` is present, map `"oauth"` and `"browser"` to provider `"codex"` for backward compatibility with the current Codex-oriented widget
+- else default to provider `"codex"`
+- if both are present, `provider` wins
+- invalid `provider` values produce a local config error instead of silently falling back
 
 ## Error Handling
 
@@ -196,6 +227,12 @@ Cache migration rule:
 - only caches stamped with `cache_source == "local_history"` are eligible after rollout
 - old caches created by browser, OAuth, or unknown sources must be ignored
 
+Main-flow behavior:
+
+- `status == "ok"` and fresh snapshot: render items, update cache, evaluate notifications
+- `status == "ok"` and stale snapshot: render stale items without notifications and write a stale reason
+- `status in {"missing", "unreadable", "unavailable"}`: try local-history cache, else render the matching local-history-only error
+
 ## Testing Strategy
 
 Add characterization-style tests around provider parsing and keep rendering tests focused on normalized items.
@@ -208,11 +245,13 @@ Required tests:
 - Codex parser renders partial data when only one window exists in the newest valid snapshot
 - Codex parser falls back from `sessions` to `archived_sessions`
 - Codex parser ignores malformed JSONL lines
+- Codex parser uses row event timestamp as the global newest-snapshot selector
 - Claude parser tests use committed redacted fixture rows only after a stable explicit percentage-bearing local transcript shape is identified
 - Claude parser returns no items when only insufficient local rows exist
 - Legacy cache entries without `cache_source == "local_history"` are ignored
 - Legacy `data_source` values do not change runtime behavior
 - main flow renders cache fallback when no fresh local data is available
+- source-level tests assert that runtime code no longer references `auth.json`, cookie parsing, usage URLs, `requests`, or browser-cookie imports
 - no test imports or monkeypatches `requests`, browser cookies, or auth-file paths for the new happy path
 
 Fixtures should be checked into the repo as redacted JSONL snippets rather than building complex mocks.
@@ -243,6 +282,7 @@ Mitigations:
 ## Success Criteria
 
 - The script does not read `auth.json`, cookies, keychain entries, or call remote usage endpoints
+- The runtime code no longer contains credential or network fallback branches for usage fetching
 - Codex percentage display comes from local session history only
 - Claude percentage display also comes from local artifacts only when trustworthy local data exists
 - Missing local data results in cache or an honest local-history error, never a credential prompt
