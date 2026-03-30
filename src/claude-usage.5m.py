@@ -67,8 +67,10 @@ except ImportError:
 BASE_URL        = "https://claude.ai"
 OAUTH_API_URL   = "https://api.anthropic.com/api/oauth/usage"
 CONFIG_PATH     = Path.home() / ".claude-usage-config.json"
+CONFIG_PATHS    = [CONFIG_PATH]
 ALERT_STATE_PATH = Path.home() / ".claude-usage-alerted.json"
 CACHE_PATH      = Path.home() / ".claude-usage-cache.json"
+CACHE_PATHS     = [CACHE_PATH]
 
 # デフォルト設定（~/.claude-usage-config.json で上書き可能）
 DEFAULT_CONFIG = {
@@ -77,6 +79,7 @@ DEFAULT_CONFIG = {
     "alert_pct":  100,  # 予測使用率のアラート閾値（🔴）
     "bar_width": 12,    # プログレスバーの幅（文字数）
     "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標
+    "provider": "codex",
     # データ取得方式: "browser"（browser_cookie3 + claude.ai API）
     #               "oauth" （macOS Keychain の OAuth トークン + api.anthropic.com）
     "data_source": "oauth",
@@ -90,17 +93,37 @@ ALL_METRICS = [
 ]
 
 # ── 設定ロード ───────────────────────────────────────────────
+def normalize_provider_config(config):
+    provider = str(config.get("provider", "")).strip().lower()
+    if provider in {"codex", "claude"}:
+        config["provider"] = provider
+        return config
+    if provider:
+        raise RuntimeError(f"unsupported provider: {provider}")
+
+    legacy = str(config.get("data_source", "")).strip().lower()
+    if legacy in {"oauth", "browser"}:
+        config["provider"] = "codex"
+        return config
+
+    config["provider"] = "codex"
+    return config
+
+
 def load_config():
     config = dict(DEFAULT_CONFIG)
-    if CONFIG_PATH.exists():
+    for config_path in CONFIG_PATHS:
+        if not config_path.exists():
+            continue
         try:
-            user = json.loads(CONFIG_PATH.read_text())
+            user = json.loads(config_path.read_text())
             for k, v in user.items():
                 if k in DEFAULT_CONFIG:
                     config[k] = v
+            break
         except Exception:
-            pass  # 読み込み失敗時はデフォルト値を使用
-    return config
+            break
+    return normalize_provider_config(config)
 
 # ── 通知アラート ─────────────────────────────────────────────
 def load_alert_state():
@@ -119,20 +142,35 @@ def save_alert_state(state):
         pass
 
 # ── 前回値キャッシュ ──────────────────────────────────────────
-def save_cache(items):
-    """正常取得時の items をキャッシュに保存する。"""
+def save_cache(provider, provider_result, cache_source="legacy"):
+    """正常取得時の provider_result をキャッシュに保存する。"""
     try:
-        CACHE_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2))
+        CACHE_PATHS[0].write_text(json.dumps({
+            "cache_schema_version": 2,
+            "cache_source": cache_source,
+            "provider": provider,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "result": provider_result,
+        }, ensure_ascii=False, indent=2))
     except Exception:
         pass
 
-def load_cache():
-    """前回の items をキャッシュから読み込む。なければ None。"""
-    if CACHE_PATH.exists():
+def load_cache(provider):
+    """前回の provider_result をキャッシュから読み込む。なければ None。"""
+    for cache_path in CACHE_PATHS:
+        if not cache_path.exists():
+            continue
         try:
-            return json.loads(CACHE_PATH.read_text())
+            payload = json.loads(cache_path.read_text())
+            if payload.get("cache_source") != "local_history":
+                continue
+            if payload.get("provider") != provider:
+                continue
+            result = payload.get("result")
+            if isinstance(result, dict):
+                return result
         except Exception:
-            pass
+            continue
     return None
 
 def send_notification(title, message):
@@ -356,9 +394,24 @@ def format_reset(resets_at_str):
     except Exception:
         return ""
 
+
+def render_config_error(message):
+    print("⚠️ Claude Usage")
+    print("---")
+    print(f"設定エラー: {message}")
+
 # ── メイン ───────────────────────────────────────────────────
 def main():
-    config = load_config()
+    try:
+        config = normalize_provider_config(dict(load_config()))
+    except RuntimeError as e:
+        render_config_error(str(e))
+        return
+
+    provider = config["provider"]
+    if provider != "codex":
+        render_config_error(f"provider not yet supported: {provider}")
+        return
 
     # config["metrics"] の順序でフィルタリング
     enabled_keys = config["metrics"]
@@ -372,18 +425,18 @@ def main():
         else:
             usage = fetch_usage_browser()
     except requests.exceptions.ConnectionError:
-        cached = load_cache()
+        cached = load_cache(provider)
         if cached:
-            render_output(cached, config, stale_reason="オフライン（前回の値を表示中）")
+            render_output(cached["items"], config, stale_reason="オフライン（前回の値を表示中）")
         else:
             print("📵 Claude  |  color=gray")
             print("---")
             print("オフライン  |  color=gray")
         return
     except requests.exceptions.Timeout:
-        cached = load_cache()
+        cached = load_cache(provider)
         if cached:
-            render_output(cached, config, stale_reason="タイムアウト（前回の値を表示中）")
+            render_output(cached["items"], config, stale_reason="タイムアウト（前回の値を表示中）")
         else:
             print("⏳ Claude  |  color=gray")
             print("---")
@@ -391,7 +444,7 @@ def main():
             print("↺ 再試行  |  refresh=true")
         return
     except requests.exceptions.HTTPError as e:
-        cached = load_cache()
+        cached = load_cache(provider)
         status = e.response.status_code
         if status in (401, 403):
             if data_source == "oauth":
@@ -401,7 +454,7 @@ def main():
         else:
             reason = f"HTTPエラー {status}（前回の値を表示中）"
         if cached:
-            render_output(cached, config, stale_reason=reason)
+            render_output(cached["items"], config, stale_reason=reason)
         else:
             if status in (401, 403):
                 print("🔑 Claude  |  color=gray")
@@ -418,9 +471,9 @@ def main():
                 print(f"HTTPエラー: {status}  |  color=red")
         return
     except Exception as e:
-        cached = load_cache()
+        cached = load_cache(provider)
         if cached:
-            render_output(cached, config, stale_reason=f"エラー（前回の値を表示中）")
+            render_output(cached["items"], config, stale_reason=f"エラー（前回の値を表示中）")
         else:
             print("⚠️ Claude Usage")
             print("---")
@@ -458,7 +511,14 @@ def main():
         return
 
     # キャッシュに保存（次回エラー時のフォールバック用）
-    save_cache(items)
+    save_cache(provider, {
+        "status": "ok",
+        "reason": "",
+        "snapshot_time": None,
+        "source_path": None,
+        "cacheable": True,
+        "items": items,
+    })
 
     # 通知チェック（閾値超過時のみ macOS 通知を送信）
     check_and_notify(items, config)
