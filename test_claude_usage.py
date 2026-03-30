@@ -187,8 +187,6 @@ def test_main_renders_invalid_provider_config_error(monkeypatch, capsys):
         "metrics": [],
     })
     monkeypatch.setattr(module, "load_cache", lambda provider: pytest.fail("load_cache should not be called"))
-    monkeypatch.setattr(module, "fetch_usage_oauth", lambda: pytest.fail("fetch_usage_oauth should not be called"))
-    monkeypatch.setattr(module, "fetch_usage_browser", lambda: pytest.fail("fetch_usage_browser should not be called"))
 
     module.main()
 
@@ -275,8 +273,6 @@ def test_main_uses_codex_provider_and_renders_local_history_items(monkeypatch):
         lambda items, loaded_config, stale_reason=None: seen["rendered"].append((items, loaded_config, stale_reason)),
     )
     monkeypatch.setattr(module, "load_cache", lambda provider: pytest.fail("load_cache should not be called"))
-    monkeypatch.setattr(module, "fetch_usage_oauth", lambda: pytest.fail("legacy oauth fetch should not be called"))
-    monkeypatch.setattr(module, "fetch_usage_browser", lambda: pytest.fail("legacy browser fetch should not be called"))
 
     module.main()
 
@@ -330,8 +326,6 @@ def test_stale_local_snapshots_render_without_notifications_or_cache_save(monkey
         lambda items, loaded_config, stale_reason=None: seen["rendered"].append((items, loaded_config, stale_reason)),
     )
     monkeypatch.setattr(module, "load_cache", lambda provider: pytest.fail("load_cache should not be called for stale ok results"))
-    monkeypatch.setattr(module, "fetch_usage_oauth", lambda: pytest.fail("legacy oauth fetch should not be called"))
-    monkeypatch.setattr(module, "fetch_usage_browser", lambda: pytest.fail("legacy browser fetch should not be called"))
 
     class FrozenDateTime(module.datetime):
         @classmethod
@@ -427,6 +421,25 @@ def test_invalid_provider_behavior_still_renders_config_error_without_loading_pr
     module.main()
 
     assert seen["rendered"] == ["unsupported provider: nope"]
+
+
+def test_wrapper_no_longer_requires_third_party_packages():
+    text = Path(SCRIPT).read_text()
+
+    assert "browser_cookie3" not in text
+    assert '"requests"' not in text
+    assert "<xbar.dependencies>python3</xbar.dependencies>" in text
+
+
+def test_source_no_longer_references_auth_or_remote_usage_paths():
+    text = Path(SCRIPT).read_text()
+
+    assert "auth.json" not in text
+    assert "backend-api/wham/usage" not in text
+    assert "chatgpt.com/codex/settings/usage" not in text
+    assert "api.anthropic.com/api/oauth/usage" not in text
+    assert "fetch_usage_browser" not in text
+    assert "fetch_usage_oauth" not in text
 
 
 def test_load_codex_history_items_maps_fields_from_local_snapshot():
