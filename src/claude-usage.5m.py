@@ -661,6 +661,45 @@ def render_config_error(message):
     print("---")
     print(f"設定エラー: {message}")
 
+
+def render_local_history_error(reason):
+    print("⚠️ Claude Usage")
+    print("---")
+    print(reason or "ローカル履歴から使用量を取得できません")
+
+
+def load_usage_items(provider, config):
+    if provider == "codex":
+        return load_codex_history_items()
+    if provider == "claude":
+        return make_provider_result(
+            "unavailable",
+            reason="Claude local history provider is not wired yet.",
+        )
+    raise RuntimeError(f"unsupported provider: {provider}")
+
+
+def is_stale_provider_result(provider_result, now=None):
+    if provider_result.get("status") != "ok":
+        return False
+
+    items = provider_result.get("items") or []
+    if not items:
+        return False
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    for item in items:
+        resets_at_raw = item.get("resets_at_raw")
+        if not resets_at_raw:
+            return False
+        resets_at = parse_iso_datetime(resets_at_raw)
+        if resets_at is None or resets_at > now:
+            return False
+
+    return True
+
 # ── メイン ───────────────────────────────────────────────────
 def main():
     try:
@@ -670,121 +709,34 @@ def main():
         return
 
     provider = config["provider"]
-    if provider != "codex":
-        render_config_error(f"provider not yet supported: {provider}")
-        return
-
-    # config["metrics"] の順序でフィルタリング
-    enabled_keys = config["metrics"]
-    metrics = [(k, le, lj, wh) for k, le, lj, wh in ALL_METRICS if k in enabled_keys]
-
-    data_source = config.get("data_source", "browser")
-
     try:
-        if data_source == "oauth":
-            usage = fetch_usage_oauth()
-        else:
-            usage = fetch_usage_browser()
-    except requests.exceptions.ConnectionError:
-        cached = load_cache(provider)
-        if cached:
-            render_output(cached["items"], config, stale_reason="オフライン（前回の値を表示中）")
-        else:
-            print("📵 Claude  |  color=gray")
-            print("---")
-            print("オフライン  |  color=gray")
-        return
-    except requests.exceptions.Timeout:
-        cached = load_cache(provider)
-        if cached:
-            render_output(cached["items"], config, stale_reason="タイムアウト（前回の値を表示中）")
-        else:
-            print("⏳ Claude  |  color=gray")
-            print("---")
-            print("タイムアウト  |  color=gray")
-            print("↺ 再試行  |  refresh=true")
-        return
-    except requests.exceptions.HTTPError as e:
-        cached = load_cache(provider)
-        status = e.response.status_code
-        if status in (401, 403):
-            if data_source == "oauth":
-                reason = "トークン期限切れ（前回の値を表示中）"
-            else:
-                reason = "ログインが必要です（前回の値を表示中）"
-        else:
-            reason = f"HTTPエラー {status}（前回の値を表示中）"
-        if cached:
-            render_output(cached["items"], config, stale_reason=reason)
-        else:
-            if status in (401, 403):
-                print("🔑 Claude  |  color=gray")
-                print("---")
-                if data_source == "oauth":
-                    print("トークン期限切れ  |  color=red")
-                    print("Claude Code を再ログインしてください  |  color=gray size=11")
-                else:
-                    print("ログインが必要です  |  color=red")
-                    print("claude.ai を開く  |  href=https://claude.ai/settings/usage")
-            else:
-                print("⚠️ Claude  |  color=gray")
-                print("---")
-                print(f"HTTPエラー: {status}  |  color=red")
-        return
-    except Exception as e:
-        cached = load_cache(provider)
-        if cached:
-            render_output(cached["items"], config, stale_reason=f"エラー（前回の値を表示中）")
-        else:
-            print("⚠️ Claude Usage")
-            print("---")
-            print(f"エラー: {str(e)[:120]}")
-            print("---")
-            print("設定ページを開く | href=https://claude.ai/settings/usage")
+        provider_result = load_usage_items(provider, config)
+    except RuntimeError as e:
+        render_config_error(str(e))
         return
 
-    # 有効な指標だけ抽出し、各自の burn rate 予測も計算
-    items = []
-    for key, label_en, label_jp, window_hours in metrics:
-        data = usage.get(key)
-        if data is None:
-            continue
-        pct = int(data.get("utilization", 0))
-        resets_at = data.get("resets_at")
-        proj = calc_projected(pct, resets_at, window_hours)
-        items.append({
-            "key":          key,
-            "label_en":     label_en,
-            "label_jp":     label_jp,
-            "window_hours": window_hours,
-            "pct":          pct,
-            "projected":    proj,
-            "reset":        format_reset(resets_at),
-            "resets_at_raw": resets_at,
-            "exhaust_info": calc_exhaust_info(pct, proj, resets_at, window_hours),
-        })
+    if provider_result["status"] == "ok":
+        if is_stale_provider_result(provider_result):
+            render_output(
+                provider_result["items"],
+                config,
+                stale_reason="ローカル履歴が古いため通知を抑止しています",
+            )
+            return
 
-    if not items:
-        print("⚠️ Claude Usage")
-        print("---")
-        print("データなし（ログインが必要かもしれません）")
-        print("設定ページを開く | href=https://claude.ai/settings/usage")
+        if provider_result.get("cacheable"):
+            save_cache(provider, provider_result, cache_source="local_history")
+
+        check_and_notify(provider_result["items"], config)
+        render_output(provider_result["items"], config)
         return
 
-    # キャッシュに保存（次回エラー時のフォールバック用）
-    save_cache(provider, {
-        "status": "ok",
-        "reason": "",
-        "snapshot_time": None,
-        "source_path": None,
-        "cacheable": True,
-        "items": items,
-    })
+    cached = load_cache(provider)
+    if cached:
+        render_output(cached["items"], config, stale_reason=provider_result.get("reason", ""))
+        return
 
-    # 通知チェック（閾値超過時のみ macOS 通知を送信）
-    check_and_notify(items, config)
-
-    render_output(items, config)
+    render_local_history_error(provider_result.get("reason", ""))
 
 
 def render_output(items, config, stale_reason=None):

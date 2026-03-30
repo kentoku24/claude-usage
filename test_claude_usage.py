@@ -196,25 +196,237 @@ def test_main_renders_invalid_provider_config_error(monkeypatch, capsys):
     assert "unsupported provider: nope" in captured.out
 
 
-def test_main_rejects_claude_provider_before_legacy_fetch(monkeypatch, capsys):
+def test_load_usage_items_dispatches_codex_provider(monkeypatch):
     module = load_module()
+    expected = module.make_provider_result(
+        "ok",
+        snapshot_time="2030-01-01T00:00:00+00:00",
+        source_path="/tmp/codex.jsonl",
+        cacheable=True,
+        items=[],
+    )
+    monkeypatch.setattr(module, "load_codex_history_items", lambda: expected)
+
+    result = module.load_usage_items("codex", {"provider": "codex"})
+
+    assert result == expected
+
+
+def test_load_usage_items_returns_unavailable_for_claude_provider():
+    module = load_module()
+
+    result = module.load_usage_items("claude", {"provider": "claude"})
+
+    assert result["status"] == "unavailable"
+    assert result["cacheable"] is False
+    assert result["items"] == []
+    assert "not wired yet" in result["reason"]
+
+
+def test_load_usage_items_rejects_unsupported_provider():
+    module = load_module()
+
+    with pytest.raises(RuntimeError, match="unsupported provider: nope"):
+        module.load_usage_items("nope", {"provider": "nope"})
+
+
+def test_main_uses_codex_provider_and_renders_local_history_items(monkeypatch):
+    module = load_module()
+    config = {
+        "provider": "codex",
+        "caution_pct": 60,
+        "warn_pct": 80,
+        "alert_pct": 100,
+        "bar_width": 12,
+        "metrics": ["five_hour"],
+    }
+    provider_result = {
+        "status": "ok",
+        "reason": "",
+        "snapshot_time": "2030-01-01T00:00:00+00:00",
+        "source_path": "/tmp/codex.jsonl",
+        "cacheable": True,
+        "items": [{
+            "key": "primary_window",
+            "label_en": "5-hour limit",
+            "label_jp": "現在のセッション",
+            "window_hours": 5,
+            "pct": 18,
+            "projected": 42,
+            "reset": "1時間後にリセット",
+            "resets_at_raw": "2030-01-01T01:00:00+00:00",
+            "exhaust_info": None,
+        }],
+    }
+    seen = {"provider": None, "saved": [], "notified": [], "rendered": []}
+    monkeypatch.setattr(module, "load_config", lambda: config)
+    monkeypatch.setattr(module, "load_usage_items", lambda provider, loaded_config: seen.update({
+        "provider": provider,
+    }) or provider_result)
+    monkeypatch.setattr(
+        module,
+        "save_cache",
+        lambda provider, result, cache_source="legacy": seen["saved"].append((provider, result, cache_source)),
+    )
+    monkeypatch.setattr(module, "check_and_notify", lambda items, loaded_config: seen["notified"].append((items, loaded_config)))
+    monkeypatch.setattr(
+        module,
+        "render_output",
+        lambda items, loaded_config, stale_reason=None: seen["rendered"].append((items, loaded_config, stale_reason)),
+    )
+    monkeypatch.setattr(module, "load_cache", lambda provider: pytest.fail("load_cache should not be called"))
+    monkeypatch.setattr(module, "fetch_usage_oauth", lambda: pytest.fail("legacy oauth fetch should not be called"))
+    monkeypatch.setattr(module, "fetch_usage_browser", lambda: pytest.fail("legacy browser fetch should not be called"))
+
+    module.main()
+
+    assert seen["provider"] == "codex"
+    assert seen["saved"] == [("codex", provider_result, "local_history")]
+    assert seen["notified"] == [(provider_result["items"], config)]
+    assert seen["rendered"] == [(provider_result["items"], config, None)]
+
+
+def test_stale_local_snapshots_render_without_notifications_or_cache_save(monkeypatch):
+    module = load_module()
+    config = {
+        "provider": "codex",
+        "caution_pct": 60,
+        "warn_pct": 80,
+        "alert_pct": 100,
+        "bar_width": 12,
+        "metrics": ["five_hour"],
+    }
+    provider_result = {
+        "status": "ok",
+        "reason": "",
+        "snapshot_time": "2026-03-29T00:00:00+00:00",
+        "source_path": "/tmp/codex.jsonl",
+        "cacheable": True,
+        "items": [{
+            "key": "primary_window",
+            "label_en": "5-hour limit",
+            "label_jp": "現在のセッション",
+            "window_hours": 5,
+            "pct": 18,
+            "projected": 42,
+            "reset": "まもなくリセット",
+            "resets_at_raw": "2026-03-29T01:00:00+00:00",
+            "exhaust_info": None,
+        }],
+    }
+    seen = {"saved": [], "notified": 0, "rendered": []}
+    fake_now = module.datetime(2026, 3, 30, 0, 0, tzinfo=module.timezone.utc)
+    monkeypatch.setattr(module, "load_config", lambda: config)
+    monkeypatch.setattr(module, "load_usage_items", lambda provider, loaded_config: provider_result)
+    monkeypatch.setattr(
+        module,
+        "save_cache",
+        lambda provider, result, cache_source="legacy": seen["saved"].append((provider, result, cache_source)),
+    )
+    monkeypatch.setattr(module, "check_and_notify", lambda items, loaded_config: seen.__setitem__("notified", seen["notified"] + 1))
+    monkeypatch.setattr(
+        module,
+        "render_output",
+        lambda items, loaded_config, stale_reason=None: seen["rendered"].append((items, loaded_config, stale_reason)),
+    )
+    monkeypatch.setattr(module, "load_cache", lambda provider: pytest.fail("load_cache should not be called for stale ok results"))
+    monkeypatch.setattr(module, "fetch_usage_oauth", lambda: pytest.fail("legacy oauth fetch should not be called"))
+    monkeypatch.setattr(module, "fetch_usage_browser", lambda: pytest.fail("legacy browser fetch should not be called"))
+
+    class FrozenDateTime(module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fake_now.replace(tzinfo=None)
+            return fake_now.astimezone(tz)
+
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
+
+    module.main()
+
+    assert seen["saved"] == []
+    assert seen["notified"] == 0
+    assert seen["rendered"] == [(provider_result["items"], config, "ローカル履歴が古いため通知を抑止しています")]
+
+
+def test_provider_scoped_cache_fallback_renders_stale_cache_for_non_ok_results(monkeypatch):
+    module = load_module()
+    config = {
+        "provider": "codex",
+        "caution_pct": 60,
+        "warn_pct": 80,
+        "alert_pct": 100,
+        "bar_width": 12,
+        "metrics": ["five_hour"],
+    }
+    cached_result = {
+        "status": "ok",
+        "reason": "",
+        "snapshot_time": "2030-01-01T00:00:00+00:00",
+        "source_path": "/tmp/cache.jsonl",
+        "cacheable": True,
+        "items": [{
+            "key": "primary_window",
+            "label_en": "5-hour limit",
+            "label_jp": "現在のセッション",
+            "window_hours": 5,
+            "pct": 23,
+            "projected": 40,
+            "reset": "2時間後にリセット",
+            "resets_at_raw": "2030-01-01T02:00:00+00:00",
+            "exhaust_info": None,
+        }],
+    }
+    seen = {"loaded": [], "saved": [], "rendered": [], "local_errors": []}
+    monkeypatch.setattr(module, "load_config", lambda: config)
+    monkeypatch.setattr(module, "load_usage_items", lambda provider, loaded_config: {
+        "status": "unreadable",
+        "reason": "history scan failed",
+        "snapshot_time": None,
+        "source_path": None,
+        "cacheable": False,
+        "items": [],
+    })
+    monkeypatch.setattr(module, "load_cache", lambda provider: seen["loaded"].append(provider) or cached_result)
+    monkeypatch.setattr(
+        module,
+        "save_cache",
+        lambda provider, result, cache_source="legacy": seen["saved"].append((provider, result, cache_source)),
+    )
+    monkeypatch.setattr(
+        module,
+        "render_output",
+        lambda items, loaded_config, stale_reason=None: seen["rendered"].append((items, loaded_config, stale_reason)),
+    )
+    monkeypatch.setattr(module, "render_local_history_error", lambda reason: seen["local_errors"].append(reason))
+    monkeypatch.setattr(module, "check_and_notify", lambda items, loaded_config: pytest.fail("check_and_notify should not run on cache fallback"))
+
+    module.main()
+
+    assert seen["loaded"] == ["codex"]
+    assert seen["saved"] == []
+    assert seen["local_errors"] == []
+    assert seen["rendered"] == [(cached_result["items"], config, "history scan failed")]
+
+
+def test_invalid_provider_behavior_still_renders_config_error_without_loading_provider(monkeypatch):
+    module = load_module()
+    seen = {"rendered": []}
     monkeypatch.setattr(module, "load_config", lambda: {
-        "provider": "claude",
-        "data_source": "oauth",
+        "provider": "nope",
         "caution_pct": 60,
         "warn_pct": 80,
         "alert_pct": 100,
         "bar_width": 12,
         "metrics": [],
     })
+    monkeypatch.setattr(module, "load_usage_items", lambda provider, config: pytest.fail("load_usage_items should not be called"))
     monkeypatch.setattr(module, "load_cache", lambda provider: pytest.fail("load_cache should not be called"))
-    monkeypatch.setattr(module, "fetch_usage_oauth", lambda: pytest.fail("fetch_usage_oauth should not be called"))
-    monkeypatch.setattr(module, "fetch_usage_browser", lambda: pytest.fail("fetch_usage_browser should not be called"))
+    monkeypatch.setattr(module, "render_config_error", lambda message: seen["rendered"].append(message))
 
     module.main()
 
-    captured = capsys.readouterr()
-    assert "provider not yet supported: claude" in captured.out
+    assert seen["rendered"] == ["unsupported provider: nope"]
 
 
 def test_load_codex_history_items_maps_fields_from_local_snapshot():
