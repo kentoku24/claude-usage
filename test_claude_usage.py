@@ -498,6 +498,22 @@ def test_main_renders_claude_local_history_unavailable(monkeypatch, capsys):
     assert "ローカル履歴" in captured.out
 
 
+def test_readme_documents_local_history_only():
+    text = Path("README.md").read_text()
+
+    assert '"provider"' in text
+    assert "auth.json" not in text
+    assert "browser-cookie3" not in text
+    assert "api.anthropic.com/api/oauth/usage" not in text
+
+
+def test_config_example_uses_provider_field():
+    config = json.loads(Path("config.example.json").read_text())
+
+    assert config["provider"] == "codex"
+    assert "data_source" not in config
+
+
 def test_load_codex_history_items_maps_fields_from_local_snapshot():
     module = load_module()
     fixture = fixture_path("codex-history-primary-secondary.jsonl")
