@@ -4,7 +4,7 @@
 
 **Goal**
 
-This widget must compute Codex and Claude rate-limit percentages from local history artifacts only. It must stop reading `auth.json`, browser cookies, keychain entries, or any other credential source. If local history does not contain usable quota data, the widget may show cached values or a local-history error, but it must never fall back to credentials or network requests.
+This widget must compute Codex and Claude rate-limit percentages from local history artifacts only when trustworthy local quota snapshots exist. It must stop reading `auth.json`, browser cookies, keychain entries, or any other credential source. If local history does not contain usable quota data, the widget may show a cache that was itself derived from local history, or a local-history error, but it must never fall back to credentials or network requests.
 
 ## Context
 
@@ -20,7 +20,7 @@ Local file inspection in this environment showed:
 - Codex history exists in `~/.codex/sessions/**/*.jsonl`, `~/.codex/archived_sessions/*.jsonl`, and `~/.codex/session_index.jsonl`
 - Codex `event_msg` rows include `payload.type == "token_count"` plus `payload.rate_limits.primary/secondary`
 - Claude local history exists in `~/.claude/projects/**/*.jsonl`, `~/.claude/history.jsonl`, and `~/.claude/stats-cache.json`
-- Claude files are clearly local-only, but the exact stable quota snapshot shape for percentage-bearing rows still needs characterization during implementation
+- Claude files are clearly local-only, but the inspected files did not yet reveal a stable percentage-bearing quota snapshot
 
 ## Scope
 
@@ -100,7 +100,9 @@ Ordering:
 
 - Scan newest files first
 - Within a file, the newest valid token-count row wins
-- Stop once both primary and secondary windows have been found
+- The selected Codex snapshot must come from one `token_count.rate_limits` event
+- Do not merge primary from one event with secondary from another event
+- If the newest valid snapshot contains only one usable window, render only that window and mark the rest unavailable
 
 Expected output:
 
@@ -110,30 +112,31 @@ Expected output:
 
 ### Claude History Provider
 
-Claude support must remain local-only, but its artifact shape is less certain than Codex in the current workspace scan. The implementation should therefore be structured as a strict local parser with explicit discovery tests.
+Claude support must also remain local-only, but unlike Codex we do not yet have a confirmed percentage-bearing quota snapshot from the inspected files. To keep the design implementable without hidden private-session assumptions, Claude is split into two explicit phases.
 
-Primary candidate inputs:
+Phase 1 contract:
 
-- `~/.claude/projects/**/*.jsonl`
-- `~/.claude/history.jsonl`
+- Inputs are limited to `~/.claude/projects/**/*.jsonl` and `~/.claude/history.jsonl`
+- The parser only accepts explicit local rows that already contain both:
+  - a percentage value
+  - a reset timestamp or reset description that can be normalized
+- The parser may use regex extraction from saved assistant text if the `%` and reset details are present in the transcript itself
+- The parser must not derive percentages from token counts, message counts, or `~/.claude/stats-cache.json`
+- If no explicit percentage-bearing local row exists, Claude returns no items
 
-Optional candidate input:
+Phase 1 user-visible behavior:
 
-- `~/.claude/stats-cache.json`
+- Claude credential and network access is removed immediately
+- Claude shows a local-history-unavailable state until an explicit local quota snapshot is found
+- No guessed or synthesized `%` values are allowed
 
-Rules:
+Phase 2 gate:
 
-- Prefer explicit quota snapshots that contain percentage and reset-time information
-- If multiple local file shapes exist, encode them as ordered parsers from most explicit to least explicit
-- Do not infer percentages from token counts unless a stable mapping exists in the local artifact itself
-- If only textual limit messages exist, treat them as insufficient for `%` output and return no Claude items
+- Once one stable local Claude artifact shape is identified, add a redacted fixture to the repo
+- Promote that shape into a first-class parser with dedicated tests
+- Only after that fixture exists may Claude percentage display be considered fully supported
 
-Failure policy:
-
-- If Claude local history cannot yield a trustworthy percentage, return no Claude items rather than falling back to credentials
-- Surface a local-history-specific message so the limitation is visible and honest
-
-This keeps the contract with the user request: local artifacts only, no secret access, no invented percentages.
+This keeps the contract with the user request: local artifacts only, no secret access, no invented percentages, and no hidden dependency on manual local-history discovery during implementation.
 
 ## Configuration Changes
 
@@ -147,10 +150,15 @@ Replace or reinterpret configuration as:
 Recommended behavior:
 
 - `provider` selects which local-history parser to run
-- old `data_source` values are tolerated for backward compatibility but normalized internally to local history mode
+- old `data_source` values are accepted only as deprecated aliases
+- every legacy `data_source` value normalizes internally to the same local-history mode
 - README examples should move to the new `provider` terminology
 
-If keeping the old config keys is cheaper in the short term, the script should still document that all values now resolve to the same local-history backend.
+Exact migration rule:
+
+- no warning banner is required in the widget UI
+- README and config examples must mark `data_source` as deprecated
+- tests must verify that `"oauth"` and `"browser"` no longer change runtime behavior
 
 ## Error Handling
 
@@ -171,10 +179,22 @@ Replace with local-history outcomes:
 Fallback order:
 
 1. fresh local-history items
-2. cached items with stale reason
+2. local-history cache items with stale reason
 3. local-history-only error state
 
 The stale reason and empty-state copy should explicitly mention local history, not login state.
+
+Freshness rule:
+
+- a parsed local snapshot is fresh if at least one returned window has `resets_at` in the future
+- a parsed local snapshot becomes stale once all returned windows have reset timestamps in the past or missing reset metadata
+- projections and notifications run only for fresh local snapshots
+
+Cache migration rule:
+
+- cached payloads must be versioned with metadata such as `cache_schema_version` and `cache_source`
+- only caches stamped with `cache_source == "local_history"` are eligible after rollout
+- old caches created by browser, OAuth, or unknown sources must be ignored
 
 ## Testing Strategy
 
@@ -184,10 +204,14 @@ Required tests:
 
 - Codex parser extracts primary and secondary windows from `token_count.rate_limits`
 - Codex parser prefers the latest valid row
+- Codex parser keeps all rendered windows from the same snapshot event
+- Codex parser renders partial data when only one window exists in the newest valid snapshot
 - Codex parser falls back from `sessions` to `archived_sessions`
 - Codex parser ignores malformed JSONL lines
-- Claude parser tests use real redacted fixture rows from the user environment once a stable percentage-bearing shape is identified
+- Claude parser tests use committed redacted fixture rows only after a stable explicit percentage-bearing local transcript shape is identified
 - Claude parser returns no items when only insufficient local rows exist
+- Legacy cache entries without `cache_source == "local_history"` are ignored
+- Legacy `data_source` values do not change runtime behavior
 - main flow renders cache fallback when no fresh local data is available
 - no test imports or monkeypatches `requests`, browser cookies, or auth-file paths for the new happy path
 
@@ -212,7 +236,7 @@ Fixtures should be checked into the repo as redacted JSONL snippets rather than 
 
 Mitigations:
 
-- characterize the exact local file shapes with fixtures before deleting old code
+- characterize the exact local Claude file shape behind a committed fixture before claiming full Claude percentage support
 - fail closed for Claude percentages instead of guessing
 - preserve cache fallback and make the error copy explicit
 
