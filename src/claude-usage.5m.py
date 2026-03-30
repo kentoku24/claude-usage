@@ -708,6 +708,35 @@ def is_stale_provider_result(provider_result, now=None):
 
     return True
 
+
+def filter_provider_items(items, config):
+    metrics = config.get("metrics") or []
+    if not metrics:
+        return items
+
+    allowed_keys = []
+    for metric in metrics:
+        if metric in {"primary_window", "secondary_window", "claude_window"}:
+            allowed_keys.append(metric)
+        elif metric == "five_hour":
+            allowed_keys.append("primary_window")
+        elif metric in {"seven_day", "seven_day_sonnet"}:
+            allowed_keys.append("secondary_window")
+
+    if not allowed_keys:
+        return items
+
+    order = {}
+    for key in allowed_keys:
+        if key not in order:
+            order[key] = len(order)
+
+    filtered = [item for item in items if item.get("key") in order]
+    if not filtered:
+        return items
+
+    return sorted(filtered, key=lambda item: order[item["key"]])
+
 # ── メイン ───────────────────────────────────────────────────
 def main():
     try:
@@ -722,11 +751,19 @@ def main():
     except RuntimeError as e:
         render_config_error(str(e))
         return
+    except Exception as e:
+        provider_result = make_provider_result(
+            "unreadable",
+            reason=f"ローカル履歴の読み込みでエラー: {e}",
+        )
 
     if provider_result["status"] == "ok":
-        if is_stale_provider_result(provider_result):
+        render_items = filter_provider_items(provider_result["items"], config)
+        render_result = dict(provider_result, items=render_items)
+
+        if is_stale_provider_result(render_result):
             render_output(
-                provider_result["items"],
+                render_items,
                 config,
                 stale_reason="ローカル履歴が古いため通知を抑止しています",
             )
@@ -735,13 +772,17 @@ def main():
         if provider_result.get("cacheable"):
             save_cache(provider, provider_result, cache_source="local_history")
 
-        check_and_notify(provider_result["items"], config)
-        render_output(provider_result["items"], config)
+        check_and_notify(render_items, config)
+        render_output(render_items, config)
         return
 
     cached = load_cache(provider)
     if cached:
-        render_output(cached["items"], config, stale_reason=provider_result.get("reason", ""))
+        render_output(
+            filter_provider_items(cached["items"], config),
+            config,
+            stale_reason=provider_result.get("reason", ""),
+        )
         return
 
     render_local_history_error(provider_result.get("reason", ""))

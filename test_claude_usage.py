@@ -246,17 +246,30 @@ def test_main_uses_codex_provider_and_renders_local_history_items(monkeypatch):
         "snapshot_time": "2030-01-01T00:00:00+00:00",
         "source_path": "/tmp/codex.jsonl",
         "cacheable": True,
-        "items": [{
-            "key": "primary_window",
-            "label_en": "5-hour limit",
-            "label_jp": "現在のセッション",
-            "window_hours": 5,
-            "pct": 18,
-            "projected": 42,
-            "reset": "1時間後にリセット",
-            "resets_at_raw": "2030-01-01T01:00:00+00:00",
-            "exhaust_info": None,
-        }],
+        "items": [
+            {
+                "key": "primary_window",
+                "label_en": "5-hour limit",
+                "label_jp": "現在のセッション",
+                "window_hours": 5,
+                "pct": 18,
+                "projected": 42,
+                "reset": "1時間後にリセット",
+                "resets_at_raw": "2030-01-01T01:00:00+00:00",
+                "exhaust_info": None,
+            },
+            {
+                "key": "secondary_window",
+                "label_en": "7-day limit",
+                "label_jp": "7日間の上限",
+                "window_hours": 168,
+                "pct": 82,
+                "projected": 90,
+                "reset": "土 17:11 にリセット",
+                "resets_at_raw": "2030-01-06T17:11:00+00:00",
+                "exhaust_info": None,
+            },
+        ],
     }
     seen = {"provider": None, "saved": [], "notified": [], "rendered": []}
     monkeypatch.setattr(module, "load_config", lambda: config)
@@ -278,10 +291,12 @@ def test_main_uses_codex_provider_and_renders_local_history_items(monkeypatch):
 
     module.main()
 
+    expected_items = [provider_result["items"][0]]
+
     assert seen["provider"] == "codex"
     assert seen["saved"] == [("codex", provider_result, "local_history")]
-    assert seen["notified"] == [(provider_result["items"], config)]
-    assert seen["rendered"] == [(provider_result["items"], config, None)]
+    assert seen["notified"] == [(expected_items, config)]
+    assert seen["rendered"] == [(expected_items, config, None)]
 
 
 def test_stale_local_snapshots_render_without_notifications_or_cache_save(monkeypatch):
@@ -403,6 +418,51 @@ def test_provider_scoped_cache_fallback_renders_stale_cache_for_non_ok_results(m
     assert seen["saved"] == []
     assert seen["local_errors"] == []
     assert seen["rendered"] == [(cached_result["items"], config, "history scan failed")]
+
+
+def test_main_falls_back_to_cache_when_provider_loader_raises(monkeypatch):
+    module = load_module()
+    config = {
+        "provider": "codex",
+        "caution_pct": 60,
+        "warn_pct": 80,
+        "alert_pct": 100,
+        "bar_width": 12,
+        "metrics": ["five_hour"],
+    }
+    cached_result = {
+        "status": "ok",
+        "reason": "",
+        "snapshot_time": "2030-01-01T00:00:00+00:00",
+        "source_path": "/tmp/cache.jsonl",
+        "cacheable": True,
+        "items": [{
+            "key": "primary_window",
+            "label_en": "5-hour limit",
+            "label_jp": "現在のセッション",
+            "window_hours": 5,
+            "pct": 23,
+            "projected": 40,
+            "reset": "2時間後にリセット",
+            "resets_at_raw": "2030-01-01T02:00:00+00:00",
+            "exhaust_info": None,
+        }],
+    }
+    seen = {"rendered": []}
+    monkeypatch.setattr(module, "load_config", lambda: config)
+    monkeypatch.setattr(module, "load_usage_items", lambda provider, loaded_config: (_ for _ in ()).throw(ValueError("boom")))
+    monkeypatch.setattr(module, "load_cache", lambda provider: cached_result)
+    monkeypatch.setattr(module, "save_cache", lambda *args, **kwargs: pytest.fail("save_cache should not be called"))
+    monkeypatch.setattr(module, "check_and_notify", lambda *args, **kwargs: pytest.fail("check_and_notify should not be called"))
+    monkeypatch.setattr(
+        module,
+        "render_output",
+        lambda items, loaded_config, stale_reason=None: seen["rendered"].append((items, loaded_config, stale_reason)),
+    )
+
+    module.main()
+
+    assert seen["rendered"] == [(cached_result["items"], config, "ローカル履歴の読み込みでエラー: boom")]
 
 
 def test_invalid_provider_behavior_still_renders_config_error_without_loading_provider(monkeypatch):
