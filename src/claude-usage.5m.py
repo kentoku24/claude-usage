@@ -43,6 +43,8 @@ CACHE_PATH      = Path.home() / ".claude-usage-cache.json"
 CACHE_PATHS     = [CACHE_PATH]
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 CODEX_ARCHIVED_SESSIONS_ROOT = Path.home() / ".codex" / "archived_sessions"
+CLAUDE_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
+CLAUDE_HISTORY_PATH = Path.home() / ".claude" / "history.jsonl"
 
 # デフォルト設定（~/.claude-usage-config.json で上書き可能）
 DEFAULT_CONFIG = {
@@ -174,6 +176,19 @@ def list_codex_history_paths(root, recursive):
     if recursive:
         return sorted(root.rglob("*.jsonl"))
     return sorted(root.glob("*.jsonl"))
+
+
+def list_claude_history_paths(projects_root, history_path):
+    paths = []
+    projects_root = Path(projects_root)
+    if projects_root.exists():
+        paths.extend(sorted(projects_root.rglob("*.jsonl")))
+
+    history_path = Path(history_path)
+    if history_path.exists():
+        paths.append(history_path)
+
+    return paths
 
 
 def parse_iso_datetime(value):
@@ -401,6 +416,109 @@ def load_codex_history_items(session_paths=None, archived_paths=None):
         items=newest_snapshot["items"],
     )
 
+
+def extract_claude_quota_item(record):
+    if not isinstance(record, dict):
+        return None
+
+    candidates = [record]
+    for key in ("payload", "message"):
+        nested = record.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+
+    for candidate in candidates:
+        pct = first_number(
+            candidate.get("used_percent"),
+            candidate.get("utilization"),
+            candidate.get("percentage"),
+            candidate.get("usage_pct"),
+            candidate.get("percent"),
+        )
+        resets_at_raw = normalize_reset_time(candidate)
+        if pct is None or resets_at_raw is None:
+            continue
+
+        pct = int(pct) if float(pct).is_integer() else pct
+        window_hours = 168
+        projected = calc_projected(pct, resets_at_raw, window_hours)
+        return {
+            "key": "claude_window",
+            "label_en": "Claude limit",
+            "label_jp": "Claude 使用量",
+            "window_hours": window_hours,
+            "pct": pct,
+            "resets_at_raw": resets_at_raw,
+            "projected": projected,
+            "reset": format_reset(resets_at_raw),
+            "exhaust_info": calc_exhaust_info(pct, projected, resets_at_raw, window_hours),
+        }
+
+    return None
+
+
+def load_claude_history_items(candidate_paths=None):
+    try:
+        if candidate_paths is None:
+            candidate_paths = list_claude_history_paths(CLAUDE_PROJECTS_ROOT, CLAUDE_HISTORY_PATH)
+        else:
+            candidate_paths = [Path(path) for path in candidate_paths]
+    except OSError as exc:
+        return make_provider_result(
+            "unreadable",
+            reason=f"Claude local history could not be read: {exc}",
+        )
+
+    if not candidate_paths:
+        return make_provider_result(
+            "missing",
+            reason="Claude local history files were not found.",
+        )
+
+    unreadable_error = None
+    newest_snapshot = None
+    for path in candidate_paths:
+        try:
+            for record in iter_jsonl_objects(path):
+                item = extract_claude_quota_item(record)
+                if item is None:
+                    continue
+                payload = record.get("payload")
+                if not isinstance(payload, dict):
+                    payload = {}
+                snapshot_dt = extract_codex_snapshot_time(record, payload, path)
+                snapshot = {
+                    "snapshot_dt": snapshot_dt,
+                    "snapshot_time": snapshot_dt.isoformat(),
+                    "source_path": str(path),
+                    "items": [item],
+                }
+                if newest_snapshot is None or snapshot["snapshot_dt"] > newest_snapshot["snapshot_dt"]:
+                    newest_snapshot = snapshot
+        except OSError as exc:
+            unreadable_error = exc
+            break
+
+    if unreadable_error is not None:
+        return make_provider_result(
+            "unreadable",
+            reason=f"Claude local history could not be read: {unreadable_error}",
+        )
+
+    if newest_snapshot is None:
+        return make_provider_result(
+            "unavailable",
+            reason="Claude local history does not contain explicit quota snapshots.",
+        )
+
+    return make_provider_result(
+        "ok",
+        snapshot_time=newest_snapshot["snapshot_time"],
+        source_path=newest_snapshot["source_path"],
+        cacheable=True,
+        items=newest_snapshot["items"],
+    )
+
 def send_notification(title, message):
     """macOS 通知センターに通知を送る。"""
     try:
@@ -558,17 +676,14 @@ def render_config_error(message):
 def render_local_history_error(reason):
     print("⚠️ Claude Usage")
     print("---")
-    print(reason or "ローカル履歴から使用量を取得できません")
+    print(f"ローカル履歴: {reason or '使用量を取得できません'}")
 
 
 def load_usage_items(provider, config):
     if provider == "codex":
         return load_codex_history_items()
     if provider == "claude":
-        return make_provider_result(
-            "unavailable",
-            reason="Claude local history provider is not wired yet.",
-        )
+        return load_claude_history_items()
     raise RuntimeError(f"unsupported provider: {provider}")
 
 

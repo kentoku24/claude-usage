@@ -210,15 +210,17 @@ def test_load_usage_items_dispatches_codex_provider(monkeypatch):
     assert result == expected
 
 
-def test_load_usage_items_returns_unavailable_for_claude_provider():
+def test_load_usage_items_dispatches_claude_provider(monkeypatch):
     module = load_module()
+    expected = module.make_provider_result(
+        "unavailable",
+        reason="Claude local history does not contain explicit quota snapshots.",
+    )
+    monkeypatch.setattr(module, "load_claude_history_items", lambda: expected)
 
     result = module.load_usage_items("claude", {"provider": "claude"})
 
-    assert result["status"] == "unavailable"
-    assert result["cacheable"] is False
-    assert result["items"] == []
-    assert "not wired yet" in result["reason"]
+    assert result == expected
 
 
 def test_load_usage_items_rejects_unsupported_provider():
@@ -440,6 +442,60 @@ def test_source_no_longer_references_auth_or_remote_usage_paths():
     assert "api.anthropic.com/api/oauth/usage" not in text
     assert "fetch_usage_browser" not in text
     assert "fetch_usage_oauth" not in text
+
+
+def test_load_claude_history_items_returns_unavailable_for_non_quota_history():
+    module = load_module()
+
+    result = module.load_claude_history_items([fixture_path("claude-history-unavailable.jsonl")])
+
+    assert result["status"] == "unavailable"
+    assert result["items"] == []
+
+
+def test_load_claude_history_items_returns_missing_when_no_files_exist():
+    module = load_module()
+
+    result = module.load_claude_history_items([])
+
+    assert result["status"] == "missing"
+
+
+def test_load_claude_history_items_returns_unreadable_on_io_error(monkeypatch):
+    module = load_module()
+    monkeypatch.setattr(module, "iter_jsonl_objects", lambda path: (_ for _ in ()).throw(OSError("boom")))
+
+    result = module.load_claude_history_items([Path("/tmp/fake.jsonl")])
+
+    assert result["status"] == "unreadable"
+    assert "boom" in result["reason"]
+
+
+def test_main_renders_claude_local_history_unavailable(monkeypatch, capsys):
+    module = load_module()
+    monkeypatch.setattr(module, "load_config", lambda: {
+        "provider": "claude",
+        "caution_pct": 60,
+        "warn_pct": 80,
+        "alert_pct": 100,
+        "bar_width": 12,
+        "metrics": [],
+    })
+    monkeypatch.setattr(module, "load_usage_items", lambda provider, config: {
+        "status": "unavailable",
+        "reason": "Claude local history does not contain explicit quota snapshots.",
+        "snapshot_time": None,
+        "source_path": None,
+        "cacheable": False,
+        "items": [],
+    })
+    monkeypatch.setattr(module, "load_cache", lambda provider: None)
+
+    module.main()
+
+    captured = capsys.readouterr()
+    assert "Claude local history does not contain explicit quota snapshots." in captured.out
+    assert "ローカル履歴" in captured.out
 
 
 def test_load_codex_history_items_maps_fields_from_local_snapshot():
