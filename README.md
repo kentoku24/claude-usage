@@ -1,33 +1,28 @@
-# Claude Usage Menu Bar Widget
+# Codex Usage Menu Bar Widget
 
-Claude.ai の使用量（セッション / 全モデル / Sonnet）を Mac のメニューバーにリアルタイム表示する SwiftBar プラグイン。
+Codex の使用量を Mac のメニューバーにリアルタイム表示する SwiftBar プラグイン。
 探して見つからなかったので自作したが、 https://github.com/steipete/CodexBar というOSSがすでにあった。
 
 ## 表示内容
 
 ```
-🟡 Session:18%  All:41%  Sonnet:28%
+🟡 5h:18%  🟢 Weekly:41%
 ```
 
 クリックで展開：
 
 ```
-🟡 現在のセッション: 18%
+🟡 5h usage: 18%
    ██░░░░░░░░░░ 18%
    📈 5h予測: 83%
    🔄 3時間57分後にリセット
 ---
-🟢 すべてのモデル: 41%
+🟢 Weekly usage: 41%
    █████░░░░░░░ 41%
    📈 7d予測: 49%
    🔄 水 20:59 にリセット
 ---
-🟢 Sonnet のみ: 28%
-   ███░░░░░░░░░ 28%
-   📈 7d予測: 31%
-   🔄 14時間57分後にリセット
----
-↗ claude.ai/settings/usage
+↗ chatgpt.com/codex/settings/usage
 ↺ 今すぐ更新
 ```
 
@@ -57,25 +52,25 @@ brew install --cask swiftbar
 
 | 方式 | 設定値 | 依存 | 認証 |
 |------|--------|------|------|
-| **browser** | `"browser"` | `browser-cookie3` + `requests` | Chrome の Cookie（claude.ai ログイン済み） |
-| **oauth** | `"oauth"` | `requests` のみ | macOS Keychain の Claude Code OAuth トークン |
+| **browser** | `"browser"` | `browser-cookie3` + `requests` | Chrome/Safari/Firefox の Cookie（OpenAI ダッシュボード） |
+| **oauth** | `"oauth"` | `requests` のみ | `~/.codex/auth.json` の OAuth トークン |
 
-**oauth モード**（デフォルト）: Claude Code にログイン済みであれば追加設定不要。`browser-cookie3` も不要。
+**oauth モード**（デフォルト）: Codex にログイン済みで `~/.codex/auth.json` があれば追加設定不要。`browser-cookie3` も不要。
 
 ```bash
 pip3 install requests
 ```
 
-**browser モード**: Chrome で claude.ai にログインしている環境向け。
+**browser モード**: OpenAI ダッシュボードの Cookie から usage ページを読む代替手段です。`auth.json` がない場合の保険として使ってください。
 
 ```bash
 pip3 install browser-cookie3 requests
 ```
 
-`~/.claude-usage-config.json` で方式を切り替えられます：
+`~/.codex-usage-config.json` で方式を切り替えられます：
 
 ```json
-{"data_source": "browser"}
+{"data_source": "oauth"}
 ```
 
 > **重要**: SwiftBar は独自の環境でスクリプトを実行するため、shebang に Python の絶対パスを指定する必要があります。
@@ -114,15 +109,17 @@ cp src/claude-usage.5m.py ~/Documents/SwiftBar/
 # 実行権限を付与
 chmod +x ~/Documents/SwiftBar/claude-usage.5m.py
 
-# 設定ファイルをコピー（お好みで編集）
-cp config.example.json ~/.claude-usage-config.json
+# 設定ファイルを作成（お好みで編集）
+cat > ~/.codex-usage-config.json <<'JSON'
+{"data_source":"oauth"}
+JSON
 ```
 
 ### 4. SwiftBar を起動してフォルダを選択
 
 1. SwiftBar を起動
 2. プラグインフォルダの選択ダイアログが表示されたら `~/Documents/SwiftBar` を選択
-3. メニューバーに Claude の使用量が表示されれば完了
+3. メニューバーに Codex の使用量が表示されれば完了
 
 ### 5. 動作確認
 
@@ -169,18 +166,18 @@ python3 -c "import browser_cookie3; import sys; print(sys.executable)"
 
 ### 認証エラー（401 / 403）
 
-**browser モード**: Chrome で claude.ai にログインしているか確認してください。ブラウザで一度 `claude.ai/settings/usage` を開いてから再試行。
+**browser モード**: OpenAI ダッシュボードにログインしているか確認してください。ブラウザで一度 `https://chatgpt.com/codex/settings/usage` を開いてから再試行。
 
-**oauth モード**: Claude Code のトークンが期限切れです。Claude Code を再ログイン（`/logout` → `claude`）してください。
+**oauth モード**: `~/.codex/auth.json` の access token が期限切れです。Codex に再ログインしてください。
 
 ### ネット切断時
 
-- 📵 Claude（グレー）→ オフライン
-- ⏳ Claude（グレー）→ タイムアウト（再試行ボタンあり）
+- 📵 Codex（グレー）→ オフライン
+- ⏳ Codex（グレー）→ タイムアウト（再試行ボタンあり）
 
 ## カスタマイズ
 
-### 設定ファイル（`~/.claude-usage-config.json`）
+### 設定ファイル（`~/.codex-usage-config.json`）
 
 以下の設定ファイルを作成することで動作をカスタマイズできます。ファイルがない場合はデフォルト値が使われます。
 
@@ -190,7 +187,7 @@ python3 -c "import browser_cookie3; import sys; print(sys.executable)"
   "warn_pct":  80,
   "alert_pct": 100,
   "bar_width": 12,
-  "metrics": ["five_hour", "seven_day", "seven_day_sonnet"]
+  "metrics": ["primary_window", "secondary_window"]
 }
 ```
 
@@ -200,14 +197,14 @@ python3 -c "import browser_cookie3; import sys; print(sys.executable)"
 | `warn_pct` | `80` | 警告通知を送る予測使用率の閾値（🟡） |
 | `alert_pct` | `100` | アラート通知を送る予測使用率の閾値（🔴） |
 | `bar_width` | `12` | プログレスバーの文字数 |
-| `metrics` | 全3指標 | 表示する指標のリスト（順序も反映） |
+| `metrics` | 全指標 | 表示する指標のリスト（順序も反映） |
 
-**設定例**: Sonnet だけ表示、70% 超で警告
+**設定例**: 5h 枠だけ表示、70% 超で警告
 
 ```json
 {
   "warn_pct": 70,
-  "metrics": ["seven_day_sonnet"]
+  "metrics": ["primary_window"]
 }
 ```
 
@@ -217,7 +214,7 @@ python3 -c "import browser_cookie3; import sys; print(sys.executable)"
 
 - 同じリセットサイクル内で各閾値につき **1回のみ** 送信されます（連続通知なし）
 - リセット後は自動的にリセットされます
-- 通知の状態は `~/.claude-usage-alerted.json` で管理されます
+- 通知の状態は `~/.codex-usage-alerted.json` で管理されます
 
 ### 更新頻度のカスタマイズ
 
@@ -243,7 +240,7 @@ python3 -m pytest test_claude_usage.py -v
 | `test_menubar_title_has_percentage` | 1行目に `%` が含まれる（数値表示） |
 | `test_output_has_separator` | SwiftBarフォーマット `---` が含まれる |
 
-> Claude.aiにアクセスできる環境（ログイン済みChrome）が必要です。
+> Codex にアクセスできる環境（`~/.codex/auth.json` または OpenAI ダッシュボード Cookie）が必要です。
 
 ## 仕組み
 
@@ -251,8 +248,8 @@ JSON API を直接叩いて使用量データを取得します（HTML スクレ
 
 | 方式 | エンドポイント |
 |------|--------------|
-| browser | `claude.ai/api/organizations/{uuid}/usage`（Chrome Cookie 認証） |
-| oauth | `api.anthropic.com/api/oauth/usage`（macOS Keychain OAuth トークン認証） |
+| browser | `chatgpt.com/codex/settings/usage`（Cookie から HTML を抽出） |
+| oauth | `chatgpt.com/backend-api/wham/usage`（Codex auth.json の OAuth トークン） |
 
 取得するデータ：
 

@@ -139,7 +139,12 @@ def test_main_renders_invalid_provider_config(monkeypatch):
         "metrics": [],
     })
     monkeypatch.setattr(module, "load_cache", lambda provider: None)
-    ...
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        module.main()
+    output = buffer.getvalue()
+    assert "設定エラー" in output
+    assert "provider" in output
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -321,6 +326,7 @@ Expected: PASS for Codex fixture parsing, newest-snapshot selection, partial-win
 
 ```bash
 git add src/claude-usage.5m.py test_claude_usage.py tests/fixtures/codex-history-primary-secondary.jsonl tests/fixtures/codex-history-partial.jsonl tests/fixtures/codex-history-invalid.jsonl
+git add tests/fixtures/codex-history-archived-only.jsonl
 git commit -m "feat: parse codex rate limits from local history"
 ```
 
@@ -357,7 +363,17 @@ def test_main_uses_codex_provider_and_renders_local_history(monkeypatch):
         "cacheable": True,
         "items": [{"key": "primary_window", "label_en": "5-hour limit", "label_jp": "現在のセッション", "window_hours": 5, "pct": 18, "resets_at_raw": "2099-03-30T12:00:00+00:00", "projected": None, "reset": "", "exhaust_info": None}],
     })
-    ...
+    saved = {}
+    monkeypatch.setattr(module, "save_cache", lambda provider, result: saved.update({"provider": provider, "status": result["status"]}))
+    monkeypatch.setattr(module, "check_and_notify", lambda items, config: saved.update({"notified": True, "count": len(items)}))
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        module.main()
+    output = buffer.getvalue()
+    assert "18%" in output
+    assert saved["provider"] == "codex"
+    assert saved["status"] == "ok"
+    assert saved["notified"] is True
 
 
 def test_main_uses_provider_scoped_cache_for_missing_local_history(monkeypatch):
@@ -386,7 +402,15 @@ def test_main_uses_provider_scoped_cache_for_missing_local_history(monkeypatch):
         "cacheable": True,
         "items": [{"key": "primary_window", "label_en": "5-hour limit", "label_jp": "現在のセッション", "window_hours": 5, "pct": 18, "resets_at_raw": "2000-03-30T12:00:00+00:00", "projected": None, "reset": "", "exhaust_info": None}],
     })
-    ...
+    called = {"notified": False}
+    monkeypatch.setattr(module, "check_and_notify", lambda items, config: called.update({"notified": True}))
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        module.main()
+    output = buffer.getvalue()
+    assert "前回の値を表示中" in output
+    assert "18%" in output
+    assert called["notified"] is False
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -403,15 +427,23 @@ def load_usage_items(provider, config):
     if provider == "codex":
         return load_codex_history_items()
     if provider == "claude":
-        return load_claude_history_items()
+        return {
+            "status": "unavailable",
+            "reason": "Claude local history provider is not wired yet.",
+            "snapshot_time": None,
+            "source_path": None,
+            "cacheable": False,
+            "items": [],
+        }
     raise RuntimeError(f"unsupported provider: {provider}")
 ```
 
 Update `main()` to consume provider results:
 
 - `status == "ok"` with future reset timestamps: render and cache
-- `status == "ok"` but stale: render stale without notifications
+- `status == "ok"` but stale: render stale without notifications, do not overwrite cache, and prefix the menu with `⚠️`
 - other statuses: try provider-scoped local-history cache, otherwise show local-history-only error
+- when no cache exists for a non-`ok` result, render the provider `reason` directly in the dropdown
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -543,7 +575,13 @@ def test_main_renders_claude_local_history_unavailable(monkeypatch):
         "cacheable": False,
         "items": [],
     })
-    ...
+    monkeypatch.setattr(module, "load_cache", lambda provider: None)
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        module.main()
+    output = buffer.getvalue()
+    assert "Claude local history does not contain explicit quota snapshots." in output
+    assert "ローカル履歴" in output
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -561,9 +599,17 @@ Implement `load_claude_history_items()` to:
 - return `unreadable` when filesystem or JSONL iteration errors prevent a trustworthy scan
 - return `unavailable` with no items when none are found
 
-Keep the implementation intentionally conservative:
+Keep the implementation intentionally conservative, but with distinct branches:
 
 ```python
+if not candidate_paths:
+    return {"status": "missing", "reason": "Claude local history files were not found.", ...}
+
+try:
+    ...
+except OSError:
+    return {"status": "unreadable", "reason": "Claude local history could not be read.", ...}
+
 return {
     "status": "unavailable",
     "reason": "Claude local history does not contain explicit quota snapshots.",
@@ -649,7 +695,7 @@ Run: `python3 -m pytest test_claude_usage.py -v`
 Expected: all tests PASS.
 
 Run: `bash src/claude-usage.5m.py`
-Expected: SwiftBar-formatted output that either shows local-history percentages or a local-history-specific fallback message, with no import/network/auth errors.
+Expected: SwiftBar-formatted output that either shows local-history percentages or a local-history-specific fallback message. The polyglot wrapper is preserved, but it should require only Python 3.10+ and standard-library imports.
 
 - [ ] **Step 5: Commit**
 
