@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-03-29T10:00:00+00:00","message":{"role":"assistant","content":[{"type":"text","text":"You have 12 messages remaining in this conversation."}]}}
+{"type":"summary","timestamp":"2026-03-29T10:05:00+00:00","payload":{"text":"No explicit quota percentage or reset timestamp is present here."}}
