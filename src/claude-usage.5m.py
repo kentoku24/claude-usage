@@ -54,7 +54,6 @@ DEFAULT_CONFIG = {
     "bar_width": 12,    # プログレスバーの幅（文字数）
     "metrics": ["five_hour", "seven_day", "seven_day_sonnet"],  # 表示する指標
     "provider": "codex",
-    "data_source": "oauth",
 }
 
 # 全指標の定義  (key, label_en, label_jp, window_hours)
@@ -90,7 +89,7 @@ def load_config():
         try:
             user = json.loads(config_path.read_text())
             for k, v in user.items():
-                if k in DEFAULT_CONFIG:
+                if k in DEFAULT_CONFIG or k == "data_source":
                     config[k] = v
             break
         except Exception:
